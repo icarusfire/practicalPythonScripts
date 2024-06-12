@@ -48,7 +48,35 @@ def replace_in_file(search_text, replacement_text, file_path):
     except Exception as e:
         print(f"Error processing file {file_path}: {e}")
 
+def replace_in_file(search_text, replacement_text, file_path):
+    """
+    Replaces all occurrences of search_text with replacement_text in the specified file, preserving line endings.
 
+    Parameters:
+    search_text (str): Text to search for.
+    replacement_text (str): Text to replace with.
+    file_path (str): Path to the file where the replacement should occur.
+    """
+    try:
+        # Detect original line endings
+        with open(file_path, 'rb') as f:
+            content = f.read()
+            if b'\r\n' in content:
+                original_line_ending = '\r\n'
+            else:
+                original_line_ending = '\n'
+        
+        with open(file_path, 'r', newline=original_line_ending) as file:
+            lines = file.readlines()
+
+        with open(file_path, 'w', newline=original_line_ending) as file:
+            for line in lines:
+                new_line = re.sub(search_text, replacement_text, line)
+                file.write(new_line)
+
+        print(f"Processed {file_path}")
+    except Exception as e:
+        print(f"Error processing file {file_path}: {e}")
 
 # Example usage
 tasks = [
