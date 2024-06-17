@@ -1,0 +1,31 @@
+import os
+import shutil
+
+def find_pom_file(start_path):
+    """
+    Recursively searches for pom.xml starting from the given path.
+    """
+    for root, dirs, files in os.walk(start_path):
+        if 'pom.xml' in files:
+            return os.path.join(root, 'pom.xml')
+    return None
+
+def replace_pom_file(target_pom_path, new_pom_path):
+    """
+    Replaces the target pom.xml file with the new pom.xml file.
+    """
+    shutil.copy2(new_pom_path, target_pom_path)
+    print(f"Replaced {target_pom_path} with {new_pom_path}")
+
+if __name__ == "__main__":
+    start_path = input("Enter the start path to search for pom.xml: ").strip()
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    new_pom_path = os.path.join(script_dir, 'pom.xml')
+
+    target_pom_path = find_pom_file(start_path)
+
+    if target_pom_path:
+        print(f"Found pom.xml at: {target_pom_path}")
+        replace_pom_file(target_pom_path, new_pom_path)
+    else:
+        print("No pom.xml found in the given path.")
