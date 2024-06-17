@@ -1,0 +1,59 @@
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
+
+def add_dependency_to_pom(dependency_xml, pom_file_path):
+    # Parse the pom.xml file
+    tree = ET.parse(pom_file_path)
+    root = tree.getroot()
+
+    # Define the namespaces to avoid issues with XML namespaces
+    namespaces = {'m': 'http://maven.apache.org/POM/4.0.0'}
+    ET.register_namespace('', namespaces['m'])
+
+    # Find the dependencies node
+    dependencies_node = root.find('m:dependencies', namespaces)
+    if dependencies_node is None:
+        # Create a dependencies node if it doesn't exist
+        dependencies_node = ET.SubElement(root, 'dependencies')
+
+    # Parse the new dependency XML string
+    new_dependency = ET.fromstring(dependency_xml)
+
+    # Add the new dependency to the dependencies node
+    dependencies_node.append(new_dependency)
+
+    # Convert the XML tree back to a string
+    xml_str = ET.tostring(root, encoding='utf-8')
+
+    # Use minidom to pretty-print the XML with proper indentation
+    pretty_xml_str = minidom.parseString(xml_str).toprettyxml(indent="  ")
+
+    # Write the pretty-printed XML back to the pom.xml file
+    with open(pom_file_path, 'w') as f:
+        f.write(pretty_xml_str)
+
+def add_dependencies_to_multiple_poms(dependencies_paths):
+    for dependency, pom_path in dependencies_paths:
+        add_dependency_to_pom(dependency, pom_path)
+
+# Example usage:
+dependencies_paths = [
+    (
+        '''<dependency>
+              <groupId>org.example</groupId>
+              <artifactId>example-artifact</artifactId>
+              <version>1.0.0</version>
+          </dependency>''',
+        'path/to/your/pom1.xml'
+    ),
+    (
+        '''<dependency>
+              <groupId>org.another</groupId>
+              <artifactId>another-artifact</artifactId>
+              <version>2.0.0</version>
+          </dependency>''',
+        'path/to/your/pom2.xml'
+    ),
+]
+
+add_dependencies_to_multiple_poms(dependencies_paths)
