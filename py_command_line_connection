@@ -1,0 +1,57 @@
+import subprocess
+import os
+
+# Define your OpenShift access token
+OC_ACCESS_TOKEN = "your-access-token-here"
+
+# Define a map of secret names and their corresponding folder locations and namespaces
+secrets_map = {
+    "my-api-identity": ("namespace1", "/path/to/folder1"),
+    "another-secret": ("namespace2", "/path/to/folder2"),
+    "yet-another-secret": ("namespace3", "/path/to/folder3"),
+}
+
+def oc_login(token):
+    login_command = f"oc login --token={token}"
+    result = subprocess.run(login_command, shell=True, text=True, capture_output=True)
+    if result.returncode != 0:
+        raise Exception(f"Failed to login to OpenShift. Error: {result.stderr}")
+    else:
+        print("Successfully logged into OpenShift.")
+
+def fetch_and_move_secret(secret_name, namespace, destination_folder):
+    print(f"Processing secret: {secret_name} in namespace: {namespace}")
+
+    # Check if the destination folder exists
+    if not os.path.exists(destination_folder):
+        print(f"Failed to process secret {secret_name}: Destination folder {destination_folder} does not exist.")
+        return
+
+    # Fetch the secret and decode it, saving to keystore.jks
+    command = f"oc get secret {secret_name} -n {namespace} -o jsonpath='{{.data.keystore\\.jks}}' | base64 -d > keystore.jks"
+    result = subprocess.run(command, shell=True, text=True, capture_output=True)
+
+    # Check if the fetch was successful
+    if result.returncode == 0:
+        print(f"Secret {secret_name} fetched successfully.")
+
+        # Move the keystore.jks file to the destination folder
+        destination_path = os.path.join(destination_folder, "keystore.jks")
+        os.rename("keystore.jks", destination_path)
+
+        print(f"Secret {secret_name} moved to {destination_folder}.")
+    else:
+        print(f"Failed to fetch secret {secret_name} from namespace {namespace}. Error: {result.stderr}")
+
+def main():
+    # Log in to OpenShift
+    oc_login(OC_ACCESS_TOKEN)
+
+    # Iterate over the map and process each secret
+    for secret_name, (namespace, folder) in secrets_map.items():
+        fetch_and_move_secret(secret_name, namespace, folder)
+
+    print("All secrets processed.")
+
+if __name__ == "__main__":
+    main()
