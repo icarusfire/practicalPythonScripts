@@ -1,0 +1,118 @@
+from azure.devops.connection import Connection
+from msrest.authentication import BasicAuthentication
+from azure.devops.v6_0.git.models import GitRefUpdate, GitCommitRef, GitRefUpdateResult, GitPullRequest, GitPullRequestCreateOptions
+import base64
+
+class AzureDevOpsGit:
+    def __init__(self, personal_access_token, organization_url, project_name, repository_id):
+        self.personal_access_token = personal_access_token
+        self.organization_url = organization_url
+        self.project_name = project_name
+        self.repository_id = repository_id
+        
+        # Create a connection to the Azure DevOps organization
+        self.connection = Connection(base_url=self.organization_url, creds=BasicAuthentication('', self.personal_access_token))
+        self.git_client = self.connection.clients.get_git_client()
+
+    def create_branch(self, new_branch_name, source_branch_name='refs/heads/main'):
+        # Get the latest commit of the source branch
+        refs = self.git_client.get_refs(repository_id=self.repository_id, project=self.project_name)
+        source_branch_ref = next(ref for ref in refs if ref.name == source_branch_name)
+        
+        # Create a new branch ref
+        new_ref = GitRefUpdate(
+            name=f'refs/heads/{new_branch_name}',
+            old_object_id=source_branch_ref.object_id,
+            new_object_id=source_branch_ref.object_id
+        )
+        
+        result = self.git_client.update_refs(ref_updates=[new_ref], repository_id=self.repository_id, project=self.project_name)
+        return result
+
+    def update_file_in_branch(self, branch_name, file_path, new_content):
+        # Get the latest commit in the branch
+        refs = self.git_client.get_refs(repository_id=self.repository_id, project=self.project_name)
+        branch_ref = next(ref for ref in refs if ref.name == f'refs/heads/{branch_name}')
+        
+        # Create the new content
+        encoded_content = base64.b64encode(new_content.encode()).decode()
+        
+        # Get the current content of the file to update
+        item = self.git_client.get_item(
+            repository_id=self.repository_id,
+            path=file_path,
+            project=self.project_name,
+            version_descriptor={'version': branch_name, 'version_type': 'branch', 'version_options': None},
+        )
+        
+        old_object_id = item.commit_id
+        
+        # Create the new commit
+        new_commit = GitCommitRef(
+            comment='Updating file content',
+            changes=[
+                {
+                    'changeType': 'edit',
+                    'item': {'path': file_path},
+                    'newContent': {'content': encoded_content, 'contentType': 'base64Encoded'}
+                }
+            ]
+        )
+        
+        result = self.git_client.create_push(
+            repository_id=self.repository_id,
+            project=self.project_name,
+            ref_updates=[GitRefUpdate(name=f'refs/heads/{branch_name}', old_object_id=old_object_id)],
+            commits=[new_commit]
+        )
+        return result
+
+    def create_pull_request(self, source_branch_name, target_branch_name='refs/heads/main', title='New Pull Request', description=''):
+        pr = GitPullRequest(
+            title=title,
+            description=description,
+            source_ref_name=f'refs/heads/{source_branch_name}',
+            target_ref_name=target_branch_name
+        )
+        
+        created_pr = self.git_client.create_pull_request(
+            git_pull_request_to_create=pr,
+            repository_id=self.repository_id,
+            project=self.project_name
+        )
+        return created_pr
+
+    def get_file_contents(self, branch_name, file_path):
+        item = self.git_client.get_item(
+            repository_id=self.repository_id,
+            path=file_path,
+            project=self.project_name,
+            version_descriptor={'version': branch_name, 'version_type': 'branch', 'version_options': None},
+            include_content=True
+        )
+        
+        file_content = base64.b64decode(item.content).decode('utf-8')
+        return file_content
+
+# Example usage:
+personal_access_token = 'your_pat_here'
+organization_url = 'https://dev.azure.com/your_organization'
+project_name = 'your_project_name'
+repository_id = 'your_repository_id'
+
+devops_git = AzureDevOpsGit(personal_access_token, organization_url, project_name, repository_id)
+
+# Create a new branch
+new_branch_result = devops_git.create_branch('new-feature-branch')
+print(f'New branch created: {new_branch_result}')
+
+# Update a file in the new branch
+update_result = devops_git.update_file_in_branch('new-feature-branch', '/path/to/your/file.txt', 'New file content')
+print(f'File updated: {update_result}')
+
+# Extract branch name from the push result for creating a PR
+source_branch_name = 'new-feature-branch'
+
+# Create a pull request
+pr_result = devops_git.create_pull_request(source_branch_name)
+print(f'Pull request created: {pr_result.pull_request_id} - {pr_result.url}')
