@@ -1,10 +1,9 @@
-import base64
-from azure.devops.v6_0.git.git_client import GitClient
-from azure.devops.v6_0.git.models import GitCommitRef, GitRefUpdate, GitChange, GitItem, GitPush, GitPushRef, ItemContent, ItemContentType, GitUserDate, VersionControlChangeType
+from azure.devops.v6_0.git.models import GitRefUpdate, GitCommitRef, GitRefUpdateResult, GitPullRequest, GitPullRequestCreateOptions
 from datetime import datetime
+import base64
 
 class MyAzureDevOpsClient:
-    def __init__(self, git_client: GitClient, project: str, repo_id: str):
+    def __init__(self, git_client, project: str, repo_id: str):
         self.git_client = git_client
         self.project = project
         self.repo_id = repo_id
@@ -18,35 +17,42 @@ class MyAzureDevOpsClient:
         branch_ref = refs[0]
         old_commit_id = branch_ref.object_id
 
-        # Get the latest commit
-        commit = self.git_client.get_commit(commit_id=old_commit_id, repository_id=self.repo_id, project=self.project)
-
-        # Prepare the file content
+        # Prepare the new file content
         encoded_content = base64.b64encode(new_content.encode()).decode()
-
-        # Create a change for the file update
-        change = GitChange(
-            change_type=VersionControlChangeType.EDIT,
-            item=GitItem(path=file_path),
-            new_content=ItemContent(content=encoded_content, content_type=ItemContentType.base64Encoded)
-        )
 
         # Create a new commit
         new_commit = GitCommitRef(
             comment=f"Update {file_path}",
-            changes=[change],
-            parents=[commit.commit_id],
-            author=GitUserDate(name="Your Name", email="your.email@example.com", date=datetime.utcnow().isoformat())
+            changes=[
+                {
+                    'changeType': 'edit',
+                    'item': {
+                        'path': file_path
+                    },
+                    'newContent': {
+                        'content': encoded_content,
+                        'contentType': 'base64Encoded'
+                    }
+                }
+            ],
+            author={
+                'name': 'Your Name',
+                'email': 'your.email@example.com',
+                'date': datetime.utcnow().isoformat() + 'Z'
+            }
+        )
+
+        # Create a reference update
+        ref_update = GitRefUpdate(
+            name=f"refs/heads/{branch_name}",
+            old_object_id=old_commit_id
         )
 
         # Create the push
-        push = GitPush(
-            commits=[new_commit],
-            ref_updates=[GitRefUpdate(
-                name=f"refs/heads/{branch_name}",
-                old_object_id=old_commit_id
-            )]
-        )
+        push = {
+            'commits': [new_commit],
+            'refUpdates': [ref_update]
+        }
 
         # Push the new commit to the branch
         self.git_client.create_push(push=push, repository_id=self.repo_id, project=self.project)
