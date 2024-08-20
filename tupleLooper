@@ -1,0 +1,19 @@
+import os
+
+def get_some_app_secrets_and_paths():
+    # Get all env variables starting with "some_app_"
+    some_env_vars = {key: value for key, value in os.environ.items() if key.startswith("some_app_")}
+
+    # Extract pairs (_secret and _path) and store in a dictionary
+    secrets_and_paths = {
+        key.split('_')[2]: (some_env_vars.get(f"some_app_{key.split('_')[2]}_secret"),
+                            some_env_vars.get(f"some_app_{key.split('_')[2]}_path"))
+        for key in some_env_vars if key.endswith('_secret')
+    }
+
+    # Print out each _secret and _path pair
+    for api_name, (secret, path) in secrets_and_paths.items():
+        print(f"API: {api_name} | Secret: {secret} | Path: {path}")
+
+# Call the function
+get_some_app_secrets_and_paths()
