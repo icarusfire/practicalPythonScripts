@@ -1,0 +1,147 @@
+import requests
+import csv
+
+# Define the query string
+query = "query=blah"
+
+# Define the endpoints as a dictionary for better readability
+endpoints = {
+    "myservice1": "http://abc.def.net/abcd/ef",
+    "myservice2": "http://xyz.def.net/abcd/ef",
+}
+
+# Construct full URLs with the query
+full_urls = {name: f"{url}?{query}" for name, url in endpoints.items()}
+
+# Define the cookie and headers
+cookies = {
+    "session_id": "your_cookie_value"  # Replace with your actual cookie name and value
+}
+
+headers = {
+    "Accept": "application/json"
+}
+
+# File to save the consolidated data
+csv_file = "metrics_data.csv"
+
+# Initialize the CSV file with a header
+with open(csv_file, mode='w', newline='', encoding='utf-8') as file:
+    writer = csv.writer(file)
+    # Write the header
+    writer.writerow(["service", "method", "pathTemplate", "tps"])
+
+# Iterate over each endpoint
+for service_name, url in full_urls.items():
+    print(f"Fetching data from {service_name} ({url})...")
+    try:
+        # Send the GET request with cookies and headers
+        response = requests.get(url, headers=headers, cookies=cookies)
+        if response.status_code == 200:
+            data = response.json()  # Parse the JSON response
+            
+            # Process the data
+            csv_data = []
+            if 'data' in data and 'result' in data['data']:
+                for item in data['data']['result']:
+                    metric = item.get('metric', {})
+                    service = metric.get('service', '')
+                    method = metric.get('method', '')
+                    path_template = metric.get('pathTemplate', '')
+                    tps = item.get('value', [])[1] if len(item.get('value', [])) > 1 else ''
+                    
+                    # Append extracted data to the list
+                    csv_data.append([service, method, path_template, tps])
+            
+            # Append the data to the CSV file
+            with open(csv_file, mode='a', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerows(csv_data)
+            
+            print(f"Data from {service_name} has been successfully added to {csv_file}")
+        else:
+            print(f"Failed to fetch data from {service_name}. HTTP Status Code: {response.status_code}")
+    except Exception as e:
+        print(f"An error occurred while processing {service_name}: {e}")
+
+print(f"All data has been consolidated into {csv_file}")
+
+---------------------------------------------------------------------------------
+          
+import unittest
+from unittest.mock import patch, Mock
+import requests
+import csv
+import os
+
+class TestMetricsDataFetcher(unittest.TestCase):
+    @patch("requests.get")
+    def test_fetch_metrics_data(self, mock_get):
+        # Sample mocked response data
+        mock_response_data = {
+            "data": {
+                "result": [
+                    {
+                        "metric": {
+                            "service": "test_service",
+                            "method": "GET",
+                            "pathTemplate": "/test/path"
+                        },
+                        "value": [1690476800, "25.5"]
+                    }
+                ]
+            }
+        }
+        
+        # Configure the mock to return a response with the above JSON data
+        mock_get.return_value = Mock(status_code=200, json=lambda: mock_response_data)
+        
+        # Define endpoints and cookies for testing
+        endpoints = ["https://mock-endpoint.com/api/metrics"]
+        cookies = {"session_id": "mock_session_id"}
+        headers = {"Accept": "application/json"}
+        
+        # Test CSV file path
+        test_csv_file = "test_metrics_data.csv"
+        
+        # Initialize CSV file
+        with open(test_csv_file, mode='w', newline='', encoding='utf-8') as file:
+            writer = csv.writer(file)
+            writer.writerow(["service", "method", "pathTemplate", "tps"])
+        
+        # Run the script logic for the test
+        for url in endpoints:
+            response = requests.get(url, headers=headers, cookies=cookies)
+            if response.status_code == 200:
+                data = response.json()
+                csv_data = []
+                if 'data' in data and 'result' in data['data']:
+                    for item in data['data']['result']:
+                        metric = item.get('metric', {})
+                        service = metric.get('service', '')
+                        method = metric.get('method', '')
+                        path_template = metric.get('pathTemplate', '')
+                        tps = item.get('value', [])[1] if len(item.get('value', [])) > 1 else ''
+                        csv_data.append([service, method, path_template, tps])
+                
+                # Append data to the CSV file
+                with open(test_csv_file, mode='a', newline='', encoding='utf-8') as file:
+                    writer = csv.writer(file)
+                    writer.writerows(csv_data)
+        
+        # Verify the mock was called
+        mock_get.assert_called_once_with("https://mock-endpoint.com/api/metrics", headers=headers, cookies=cookies)
+        
+        # Verify the data was written to the file
+        with open(test_csv_file, mode='r', encoding='utf-8') as file:
+            rows = list(csv.reader(file))
+            self.assertEqual(len(rows), 2)  # Header + 1 data row
+            self.assertEqual(rows[1], ["test_service", "GET", "/test/path", "25.5"])
+        
+        # Cleanup the test CSV file
+        if os.path.exists(test_csv_file):
+            os.remove(test_csv_file)
+
+if __name__ == "__main__":
+    unittest.main()
+
