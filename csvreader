@@ -31,6 +31,30 @@ with open(csv_file, mode='w', newline='', encoding='utf-8') as file:
     # Write the header
     writer.writerow(["service", "method", "pathTemplate", "tps"])
 
+
+columns = {
+    "service": 0,
+    "data_center": 1,
+    "method": 2,
+    "pathTemplate": 3,
+    "tps": 4,
+}
+
+# Helper function to filter rows by highest TPS for duplicate service/path_template/method
+def filter_highest_tps(rows):
+    unique_data = {}
+    for row in rows:
+        key = (
+            row[columns["service"]],
+            row[columns["pathTemplate"]],
+            row[columns["method"]],
+        )  # (service, pathTemplate, method)
+        tps = float(row[columns["tps"]]) if row[columns["tps"]] else 0  # Handle empty TPS values as 0
+        if key not in unique_data or tps > unique_data[key][columns["tps"]]:
+            unique_data[key] = row
+    return list(unique_data.values())
+
+
 # Iterate over each endpoint
 for service_name, url in full_urls.items():
     print(f"Fetching data from {service_name} ({url})...")
