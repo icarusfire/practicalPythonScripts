@@ -1,0 +1,69 @@
+from pathlib import Path
+from pyhocon import ConfigFactory, HOCONConverter
+from openpyxl import Workbook
+
+arr = ['weight', 'tps']
+
+def process_definitions(definitions, conf_file, sheet):
+    """
+    Handles reading definitions and writing them to an Excel sheet.
+    """
+    for key, config_item in definitions.items():
+        print(conf_file.name, key, config_item.get('weight'), config_item.get('tps'))
+
+        # Append a row to the Excel sheet
+        sheet.append([
+            conf_file.name,
+            key,
+            config_item.get('weight'),
+            config_item.get('tps')
+        ])
+
+def replace_values_with_placeholders(conf_file_path, definitions):
+    """
+    Replaces values in the conf file with placeholders if they match items in the `arr` list.
+    """
+    modified = False
+
+    # Load the config file
+    conf = ConfigFactory.parse_file(str(conf_file_path))
+
+    # Traverse the definitions and replace values with placeholders
+    for key, config_item in definitions.items():
+        for item in arr:
+            if item in config_item:
+                placeholder = f'${{{item.upper()}}}'
+                config_item[item] = placeholder
+                modified = True
+
+    # Save the modified file back to disk if there were changes
+    if modified:
+        with open(conf_file_path, 'w') as f:
+            f.write(HOCONConverter.to_hocon(conf))
+
+
+def find_conf_files_pathlib(my_filepath, excel_output="output.xlsx", modify_files=False):
+    workbook = Workbook()
+    sheet = workbook.active
+
+    # Add column headers
+    sheet.append(["File Name", "Definition Key", "Weight", "TPS"])
+
+    p = Path(my_filepath)
+    for conf_file in p.rglob("*.conf"):
+        if "scenarios" in conf_file.name:
+            conf = ConfigFactory.parse_file(str(conf_file))
+            definitions = conf.get("test.definitions")
+
+            process_definitions(definitions, conf_file, sheet)
+
+            # If modify_files is True, replace values with placeholders
+            if modify_files:
+                replace_values_with_placeholders(conf_file, definitions)
+
+    # Save the Excel file
+    workbook.save(excel_output)
+
+if __name__ == "__main__":
+    directory_path = "my_filepath"
+    find_conf_files_pathlib(directory_path, excel_output="output.xlsx", modify_files=True)
