@@ -1,7 +1,8 @@
 import org.apache.poi.ss.usermodel.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.stream.StreamSupport;
 import com.typesafe.config.*;
 
@@ -13,11 +14,17 @@ public class DynamicConfigBuilder {
         // Read data from Excel and build the nested config structure
         Map<String, Object> scenariosMap = readScenariosFromExcel(excelPath);
 
-        // Construct the hierarchy
-        Map<String, Object> definitionsMap = Map.of("value", scenariosMap);
-        Map<String, Object> testMap = Map.of("definitions", definitionsMap);
-        Map<String, Object> objectMap = Map.of("test", testMap);
-        rootMap.put("object", objectMap);
+        // Construct the hierarchy based on the corrected structure
+        Map<String, Object> valueMap = new HashMap<>();
+        valueMap.put("value", scenariosMap);
+
+        Map<String, Object> definitionsMap = new HashMap<>();
+        definitionsMap.put("definitions", valueMap);
+
+        Map<String, Object> testMap = new HashMap<>();
+        testMap.put("test", definitionsMap);
+
+        rootMap.put("object", testMap);
 
         return rootMap;
     }
@@ -30,53 +37,27 @@ public class DynamicConfigBuilder {
              Workbook workbook = WorkbookFactory.create(fis)) {
 
             Sheet sheet = workbook.getSheetAt(0);
-            Iterator<Row> rowIterator = sheet.iterator();
 
-            if (!rowIterator.hasNext()) {
-                throw new IllegalArgumentException("Excel sheet is empty");
-            }
+            StreamSupport.stream(sheet.spliterator(), false).forEach(row -> {
+                Cell scenarioCell = row.getCell(0); // Scenario name (e.g., "getP2PByUUID")
+                Cell tpsCell = row.getCell(1);      // TPS value
 
-            // Extract headers
-            Row headerRow = rowIterator.next();
-            Map<String, Integer> headerIndexMap = new HashMap<>();
-            for (Cell cell : headerRow) {
-                headerIndexMap.put(cell.getStringCellValue().trim().toLowerCase(), cell.getColumnIndex());
-            }
+                assert scenarioCell != null && tpsCell != null : "Required cells are null in row " + row.getRowNum();
 
-            StreamSupport.stream(((Iterable<Row>) () -> rowIterator).spliterator(), false).forEach(row -> {
-                String scenarioName = getCellValue(row, headerIndexMap, "scenario");
-                assert scenarioName != null && !scenarioName.isEmpty() : "Scenario name is null or empty in row " + row.getRowNum();
+                String scenarioName = scenarioCell.getStringCellValue();
+                double tpsValue = tpsCell.getNumericCellValue();
 
-                double defaultTps = Double.parseDouble(getCellValue(row, headerIndexMap, "default tps"));
-                double prodTps = Double.parseDouble(getCellValue(row, headerIndexMap, "prod tps"));
-                double prodWeight = Double.parseDouble(getCellValue(row, headerIndexMap, "prod weight"));
-                double deltaTps = Double.parseDouble(getCellValue(row, headerIndexMap, "delta tps"));
-                double deltaWeight = Double.parseDouble(getCellValue(row, headerIndexMap, "delta weight"));
+                Map<String, Object> tpsMap = new HashMap<>();
+                tpsMap.put("tps", tpsValue);
 
-                // Create TPSData record
-                var tpsData = new TPSData(defaultTps, prodTps, prodWeight, deltaTps, deltaWeight);
+                Map<String, Object> valueMap = new HashMap<>();
+                valueMap.put("value", tpsMap);
 
-                // Calculate final TPS using business logic
-                double finalTps = BusinessLogic.calculateFinalTps(tpsData);
-
-                // Build scenario-specific map
-                var valueMap = Map.of("tps", finalTps);
-                var scenarioMap = Map.of("value", valueMap);
-
-                scenariosMap.put(scenarioName, scenarioMap);
+                scenariosMap.put(scenarioName, valueMap);
             });
         }
 
         return scenariosMap;
-    }
-
-    private static String getCellValue(Row row, Map<String, Integer> headerIndexMap, String headerName) {
-        Integer columnIndex = headerIndexMap.get(headerName.toLowerCase());
-        if (columnIndex == null) {
-            throw new IllegalArgumentException("Header not found: " + headerName);
-        }
-        Cell cell = row.getCell(columnIndex);
-        return cell != null ? cell.toString().trim() : null;
     }
 
     public static void main(String[] args) {
