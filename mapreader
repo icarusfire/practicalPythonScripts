@@ -1,0 +1,109 @@
+import org.apache.poi.ss.usermodel.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.stream.StreamSupport;
+import com.typesafe.config.*;
+
+public class DynamicConfigBuilder {
+
+    public static Map<String, Object> buildDynamicConfig(String excelPath) throws Exception {
+        var rootMap = new HashMap<String, Object>();
+
+        // Read data from Excel and build the nested config structure
+        Map<String, Object> scenariosMap = readScenariosFromExcel(excelPath);
+
+        // Construct the hierarchy
+        Map<String, Object> definitionsMap = Map.of("value", scenariosMap);
+        Map<String, Object> testMap = Map.of("definitions", definitionsMap);
+        Map<String, Object> objectMap = Map.of("test", testMap);
+        rootMap.put("object", objectMap);
+
+        return rootMap;
+    }
+
+    private static Map<String, Object> readScenariosFromExcel(String excelPath) throws Exception {
+        var scenariosMap = new HashMap<String, Object>();
+
+        // Try-with-resources ensures the input stream is closed automatically
+        try (var fis = Files.newInputStream(Path.of(excelPath));
+             Workbook workbook = WorkbookFactory.create(fis)) {
+
+            Sheet sheet = workbook.getSheetAt(0);
+            Iterator<Row> rowIterator = sheet.iterator();
+
+            if (!rowIterator.hasNext()) {
+                throw new IllegalArgumentException("Excel sheet is empty");
+            }
+
+            // Extract headers
+            Row headerRow = rowIterator.next();
+            Map<String, Integer> headerIndexMap = new HashMap<>();
+            for (Cell cell : headerRow) {
+                headerIndexMap.put(cell.getStringCellValue().trim().toLowerCase(), cell.getColumnIndex());
+            }
+
+            StreamSupport.stream(((Iterable<Row>) () -> rowIterator).spliterator(), false).forEach(row -> {
+                String scenarioName = getCellValue(row, headerIndexMap, "scenario");
+                assert scenarioName != null && !scenarioName.isEmpty() : "Scenario name is null or empty in row " + row.getRowNum();
+
+                double defaultTps = Double.parseDouble(getCellValue(row, headerIndexMap, "default tps"));
+                double prodTps = Double.parseDouble(getCellValue(row, headerIndexMap, "prod tps"));
+                double prodWeight = Double.parseDouble(getCellValue(row, headerIndexMap, "prod weight"));
+                double deltaTps = Double.parseDouble(getCellValue(row, headerIndexMap, "delta tps"));
+                double deltaWeight = Double.parseDouble(getCellValue(row, headerIndexMap, "delta weight"));
+
+                // Create TPSData record
+                var tpsData = new TPSData(defaultTps, prodTps, prodWeight, deltaTps, deltaWeight);
+
+                // Calculate final TPS using business logic
+                double finalTps = BusinessLogic.calculateFinalTps(tpsData);
+
+                // Build scenario-specific map
+                var valueMap = Map.of("tps", finalTps);
+                var scenarioMap = Map.of("value", valueMap);
+
+                scenariosMap.put(scenarioName, scenarioMap);
+            });
+        }
+
+        return scenariosMap;
+    }
+
+    private static String getCellValue(Row row, Map<String, Integer> headerIndexMap, String headerName) {
+        Integer columnIndex = headerIndexMap.get(headerName.toLowerCase());
+        if (columnIndex == null) {
+            throw new IllegalArgumentException("Header not found: " + headerName);
+        }
+        Cell cell = row.getCell(columnIndex);
+        return cell != null ? cell.toString().trim() : null;
+    }
+
+    public static void main(String[] args) {
+        try {
+            String excelPath = "path/to/your/excel.xlsx";
+            Map<String, Object> dynamicConfigMap = buildDynamicConfig(excelPath);
+
+            // Print the dynamically built map
+            System.out.println(dynamicConfigMap);
+
+            // Convert to Lightbend Config
+            Config config = ConfigFactory.parseMap(dynamicConfigMap);
+            System.out.println(config.root().render());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+
+record TPSData(double defaultTps, double prodTps, double prodWeight, double deltaTps, double deltaWeight) {}
+
+class BusinessLogic {
+    public static double calculateFinalTps(TPSData tpsData) {
+        // Business logic for calculating final TPS
+        return (tpsData.prodTps() * tpsData.prodWeight() + 
+                tpsData.deltaTps() * tpsData.deltaWeight() + 
+                tpsData.defaultTps()) / 
+               (tpsData.prodWeight() + tpsData.deltaWeight() + 1);
+    }
+}
