@@ -88,3 +88,99 @@ class BusinessLogic {
                (tpsData.prodWeight() + tpsData.deltaWeight() + 1);
     }
 }
+
+-------- replace reader---
+import re
+import tempfile
+import os
+
+def replace_placeholders_in_conf(conf_file_path, scenarios, arr):
+    """
+    Replaces values in lines where:
+    test.definitions.<key>.<item> = <value>
+    with:
+    test.definitions.<key>.<item> = ${<ITEM_UPPER>}
+
+    Keeps other lines and formatting untouched.
+    """
+
+    with open(conf_file_path, 'r') as f:
+        lines = f.readlines()
+
+    modified = False
+
+    # For each scenario key
+    for key, config_item in scenarios.items():
+        # For each item in arr we want to replace
+        for item in arr:
+            if item in config_item:
+                # Build a regex that matches lines in the format:
+                # test.definitions.<key>.<item> = ...
+                pattern = (
+                    r'^(\s*test\.definitions\.' 
+                    + re.escape(key) 
+                    + r'\.' 
+                    + re.escape(item) 
+                    + r'\s*=\s*)(.*)$'
+                )
+
+                updated_lines = []
+                for line in lines:
+                    new_line = re.sub(pattern, r'\1${' + item.upper() + '}', line)
+                    if new_line != line:
+                        modified = True
+                    updated_lines.append(new_line)
+
+                # Update lines for next iteration
+                lines = updated_lines
+
+    if modified:
+        with open(conf_file_path, 'w') as f:
+            f.writelines(lines)
+
+
+# ---------------------
+# Basic Test Example
+# ---------------------
+if __name__ == "__main__":
+
+    # Example .conf content
+    original_conf_content = """\
+# Some comment line
+test.definitions.scenarioA.timeout = 300
+test.definitions.scenarioA.retries = 5
+test.definitions.scenarioB.timeout = 600
+some_other_field = [1,2]
+"""
+
+    # Create a temporary file to simulate a real .conf
+    with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix=".conf") as tmp_file:
+        tmp_file_path = tmp_file.name
+        tmp_file.write(original_conf_content)
+
+    # Example scenarios dictionary to replace
+    # Key "scenarioA" has items "timeout" in its list
+    # Key "scenarioB" does not match items we look for in arr
+    scenarios = {
+        "scenarioA": ["timeout", "foo"],
+        "scenarioB": ["bar"]
+    }
+
+    # We only want to replace "timeout" items in scenarioA
+    arr = ["timeout"]
+
+    # Replace placeholders
+    replace_placeholders_in_conf(tmp_file_path, scenarios, arr)
+
+    # Read the file back and print to confirm changes
+    with open(tmp_file_path, 'r') as f:
+        updated_content = f.read()
+        print("Updated .conf content:")
+        print(updated_content)
+
+    # Clean up the temp file
+    os.remove(tmp_file_path)
+
+
+---------
+
