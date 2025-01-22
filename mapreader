@@ -165,3 +165,47 @@ def replace_placeholders_in_file(conf_file_path, definitions):
         return result;
     }
 
+---
+
+
+    public static Map<String, Object> overridePlaceholder(
+            Map<String, Object> map1, Map<String, Object> map2) {
+
+        Map<String, Object> result = new HashMap<>();
+
+        // Create a unified set of keys from both maps
+        Set<String> allKeys = new HashSet<>();
+        allKeys.addAll(map1.keySet());
+        allKeys.addAll(map2.keySet());
+
+        for (String key : allKeys) {
+            Object value1 = map1.get(key);
+            Object value2 = map2.get(key);
+
+            // Case 1: Both sides are maps -> Recurse
+            if (value1 instanceof Map && value2 instanceof Map) {
+                Map<String, Object> mergedSubMap = overridePlaceholder(
+                        (Map<String, Object>) value1,
+                        (Map<String, Object>) value2
+                );
+                result.put(key, mergedSubMap);
+            }
+            // Case 2: map1 has a TPS placeholder -> Override if map2 has a value
+            else if (value1 instanceof String && "${TPS}".equals(value1)) {
+                result.put(key, value2 != null ? value2 : value1);
+            }
+            // Case 3: map1 has a value (not a placeholder) -> Keep it
+            else if (value1 != null) {
+                result.put(key, value1);
+            }
+            // Case 4: map1 doesn't have the key (value1 is null) -> Use map2's value
+            else {
+                result.put(key, value2);
+            }
+        }
+
+        return result;
+    }
+
+--
+
