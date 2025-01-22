@@ -121,3 +121,47 @@ def replace_placeholders_in_file(conf_file_path, definitions):
     # Write back to file if changes occurred
     with open(conf_file_path, 'w') as f:
         f.writelines(modified_lines)
+
+
+--------
+
+
+    public static Map<String, Object> overridePlaceholder(
+            Map<String, Object> map1, Map<String, Object> map2) {
+
+        Map<String, Object> result = new HashMap<>();
+
+        for (Map.Entry<String, Object> entry : map1.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
+
+            // If value is the placeholder, replace it using the matching key in map2
+            if (value instanceof String && "${TPS}".equals(value)) {
+                // Fetch from map2 if it has a value for this key
+                Object replacement = map2.get(key);
+                result.put(key, replacement != null ? replacement : value);
+            }
+            // If value is a nested map, recurse
+            else if (value instanceof Map) {
+                // Look for a nested map in map2 under the same key
+                Object nestedMap2 = map2.get(key);
+                if (nestedMap2 instanceof Map) {
+                    Map<String, Object> mergedSubMap = overridePlaceholder(
+                            (Map<String, Object>) value,
+                            (Map<String, Object>) nestedMap2
+                    );
+                    result.put(key, mergedSubMap);
+                } else {
+                    // No corresponding sub-map in map2
+                    result.put(key, value);
+                }
+            }
+            // Else, leave as is
+            else {
+                result.put(key, value);
+            }
+        }
+
+        return result;
+    }
+
