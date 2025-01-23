@@ -1,211 +1,28 @@
-import org.apache.poi.ss.usermodel.*;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.stream.StreamSupport;
-import com.typesafe.config.*;
-
-public class DynamicConfigBuilder {
-
-    public static Map<String, Object> buildDynamicConfig(String excelPath) throws Exception {
-        var rootMap = new HashMap<String, Object>();
-
-        // Read data from Excel and build the nested config structure
-        Map<String, Object> scenariosMap = readScenariosFromExcel(excelPath);
-
-        // Construct the hierarchy based on the corrected structure
-        Map<String, Object> valueMap = new HashMap<>();
-        valueMap.put("value", scenariosMap);
-
-        Map<String, Object> definitionsMap = new HashMap<>();
-        definitionsMap.put("definitions", valueMap);
-
-        Map<String, Object> testMap = new HashMap<>();
-        testMap.put("test", definitionsMap);
-
-        rootMap.put("object", testMap);
-
-        return rootMap;
-    }
-
-    private static Map<String, Object> readScenariosFromExcel(String excelPath) throws Exception {
-        var scenariosMap = new HashMap<String, Object>();
-
-        // Try-with-resources ensures the input stream is closed automatically
-        try (var fis = Files.newInputStream(Path.of(excelPath));
-             Workbook workbook = WorkbookFactory.create(fis)) {
-
-            Sheet sheet = workbook.getSheetAt(0);
-
-            StreamSupport.stream(sheet.spliterator(), false).forEach(row -> {
-                Cell scenarioCell = row.getCell(0); // Scenario name (e.g., "getP2PByUUID")
-                Cell tpsCell = row.getCell(1);      // TPS value
-
-                assert scenarioCell != null && tpsCell != null : "Required cells are null in row " + row.getRowNum();
-
-                String scenarioName = scenarioCell.getStringCellValue();
-                double tpsValue = tpsCell.getNumericCellValue();
-
-                Map<String, Object> tpsMap = new HashMap<>();
-                tpsMap.put("tps", tpsValue);
-
-                Map<String, Object> valueMap = new HashMap<>();
-                valueMap.put("value", tpsMap);
-
-                scenariosMap.put(scenarioName, valueMap);
-            });
-        }
-
-        return scenariosMap;
-    }
-
-    public static void main(String[] args) {
-        try {
-            String excelPath = "path/to/your/excel.xlsx";
-            Map<String, Object> dynamicConfigMap = buildDynamicConfig(excelPath);
-
-            // Print the dynamically built map
-            System.out.println(dynamicConfigMap);
-
-            // Convert to Lightbend Config
-            Config config = ConfigFactory.parseMap(dynamicConfigMap);
-            System.out.println(config.root().render());
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-}
-
-record TPSData(double defaultTps, double prodTps, double prodWeight, double deltaTps, double deltaWeight) {}
-
-class BusinessLogic {
-    public static double calculateFinalTps(TPSData tpsData) {
-        // Business logic for calculating final TPS
-        return (tpsData.prodTps() * tpsData.prodWeight() + 
-                tpsData.deltaTps() * tpsData.deltaWeight() + 
-                tpsData.defaultTps()) / 
-               (tpsData.prodWeight() + tpsData.deltaWeight() + 1);
-    }
-}
-
---------
-
-
-
-def replace_placeholders_in_file(conf_file_path, definitions):
-    # Read file as raw text lines
-    with open(conf_file_path, 'r') as f:
-        lines = f.readlines()
-
-    modified_lines = []
-    for line in lines:
-        # For each key in definitions
-        replaced_line = line
-        for key, config_items in definitions.items():
-            for item in config_items:
-                if f"{item} =" in line:  # a simplistic detection
-                    placeholder = f"${{{item.upper()}}}"
-                    # Replace the right-hand side only, preserving spacing
-                    # Example assumption: "  tps = 10"
-                    # If you need more robust parsing, you might use a regex.
-                    replaced_line = re.sub(
-                        r'(\s*' + item + r'\s*=\s*).*',
-                        r'\1' + placeholder,
-                        line
-                    )
-                    break
-            line = replaced_line
-        modified_lines.append(replaced_line)
-    
-    # Write back to file if changes occurred
-    with open(conf_file_path, 'w') as f:
-        f.writelines(modified_lines)
-
-
---------
-
-
-    public static Map<String, Object> overridePlaceholder(
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> overridePlaceholderInPlace(
             Map<String, Object> map1, Map<String, Object> map2) {
 
-        Map<String, Object> result = new HashMap<>();
-
-        for (Map.Entry<String, Object> entry : map1.entrySet()) {
+        for (Map.Entry<String, Object> entry : map2.entrySet()) {
             String key = entry.getKey();
-            Object value = entry.getValue();
-
-            // If value is the placeholder, replace it using the matching key in map2
-            if (value instanceof String && "${TPS}".equals(value)) {
-                // Fetch from map2 if it has a value for this key
-                Object replacement = map2.get(key);
-                result.put(key, replacement != null ? replacement : value);
-            }
-            // If value is a nested map, recurse
-            else if (value instanceof Map) {
-                // Look for a nested map in map2 under the same key
-                Object nestedMap2 = map2.get(key);
-                if (nestedMap2 instanceof Map) {
-                    Map<String, Object> mergedSubMap = overridePlaceholder(
-                            (Map<String, Object>) value,
-                            (Map<String, Object>) nestedMap2
-                    );
-                    result.put(key, mergedSubMap);
-                } else {
-                    // No corresponding sub-map in map2
-                    result.put(key, value);
-                }
-            }
-            // Else, leave as is
-            else {
-                result.put(key, value);
-            }
-        }
-
-        return result;
-    }
-
----
-
-
-    public static Map<String, Object> overridePlaceholder(
-            Map<String, Object> map1, Map<String, Object> map2) {
-
-        Map<String, Object> result = new HashMap<>();
-
-        // Create a unified set of keys from both maps
-        Set<String> allKeys = new HashSet<>();
-        allKeys.addAll(map1.keySet());
-        allKeys.addAll(map2.keySet());
-
-        for (String key : allKeys) {
+            Object value2 = entry.getValue();
             Object value1 = map1.get(key);
-            Object value2 = map2.get(key);
 
-            // Case 1: Both sides are maps -> Recurse
             if (value1 instanceof Map && value2 instanceof Map) {
-                Map<String, Object> mergedSubMap = overridePlaceholder(
+                // Recursive call for nested maps
+                overridePlaceholderInPlace(
                         (Map<String, Object>) value1,
                         (Map<String, Object>) value2
                 );
-                result.put(key, mergedSubMap);
+            } else if (PLACEHOLDER_MAP.containsKey(key) && PLACEHOLDER_MAP.get(key).equals(value1)) {
+                // Override placeholder in map1 with value from map2
+                map1.put(key, value2 != null ? value2 : value1);
+            } else if (value1 == null && PLACEHOLDER_MAP.containsKey(key)) {
+                // If map1 doesn't have the key but it's a placeholder, set it from map2
+                map1.put(key, value2);
             }
-            // Case 2: map1 has a TPS placeholder -> Override if map2 has a value
-            else if (value1 instanceof String && "${TPS}".equals(value1)) {
-                result.put(key, value2 != null ? value2 : value1);
-            }
-            // Case 3: map1 has a value (not a placeholder) -> Keep it
-            else if (value1 != null) {
-                result.put(key, value1);
-            }
-            // Case 4: map1 doesn't have the key (value1 is null) -> Use map2's value
-            else {
-                result.put(key, value2);
-            }
+            // If map1 has a non-placeholder value, retain it (no action needed)
+            // If map2 has additional keys not in PLACEHOLDER_MAP, ignore them
         }
 
-        return result;
+        return map1;
     }
-
---
-
