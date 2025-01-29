@@ -1,50 +1,16 @@
-import java.io.*;
-import java.nio.file.*;
-import java.util.Objects;
-
-public class ResourceUtil {
-    /**
-     * Loads a resource as an InputStream. Works for both JAR and local execution.
-     *
-     * @param resourcePath the path to the resource
-     * @return InputStream of the resource
-     * @throws IOException if the resource cannot be found
-     */
-    public static InputStream getResourceAsStream(String resourcePath) throws IOException {
-        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-        InputStream inputStream = classLoader.getResourceAsStream(resourcePath);
-        
-        if (inputStream == null) {
-            // If running locally, try reading from the file system
-            Path path = Paths.get(resourcePath);
-            if (Files.exists(path)) {
-                return Files.newInputStream(path);
-            } else {
-                throw new FileNotFoundException("Resource not found: " + resourcePath);
-            }
-        }
-        return inputStream;
+private static String locateResource(String resourceName, String primaryDirectory) {
+    // 1. Check the hardcoded (primary) directory first
+    File primaryFile = new File(primaryDirectory, resourceName);
+    if (primaryFile.exists()) {
+        return primaryFile.getAbsolutePath();
     }
 
-    /**
-     * Loads a resource as a File. Useful if the resource is accessible as a file on disk.
-     *
-     * @param resourcePath the path to the resource
-     * @return File object
-     * @throws IOException if the file cannot be found
-     */
-    public static File getResourceAsFile(String resourcePath) throws IOException {
-        InputStream stream = getResourceAsStream(resourcePath);
-        File tempFile = File.createTempFile("resource", ".tmp");
-        tempFile.deleteOnExit();
-        
-        try (FileOutputStream out = new FileOutputStream(tempFile)) {
-            byte[] buffer = new byte[1024];
-            int bytesRead;
-            while ((bytesRead = stream.read(buffer)) != -1) {
-                out.write(buffer, 0, bytesRead);
-            }
-        }
-        return tempFile;
+    // 2. If not found there, try loading from the classpath
+    URL resourceUrl = ResourceLoader.class.getClassLoader().getResource(resourceName);
+    if (resourceUrl != null) {
+        return resourceUrl.getFile();
     }
+
+    // 3. If neither approach works, throw an error
+    throw new IllegalArgumentException("Resource not found: " + resourceName);
 }
