@@ -1,16 +1,68 @@
-private static String locateResource(String resourceName, String primaryDirectory) {
-    // 1. Check the hardcoded (primary) directory first
-    File primaryFile = new File(primaryDirectory, resourceName);
-    if (primaryFile.exists()) {
-        return primaryFile.getAbsolutePath();
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVParser;
+import org.apache.commons.csv.CSVRecord;
+
+// Make sure to include Apache Commons CSV in your dependencies
+
+public class DynamicConfigBuilder {
+
+    public Map<String, Object> buildDynamicConfig(String csvPath) throws IOException {
+        Map<String, Object> rootMap = new HashMap<>();
+        Map<String, Object> scenariosMap = readScenariosFromCsv(csvPath);
+        Map<String, Object> testMap = new HashMap<>();
+
+        testMap.put("definitions", scenariosMap);
+        rootMap.put("test", testMap);
+
+        return rootMap;
     }
 
-    // 2. If not found there, try loading from the classpath
-    URL resourceUrl = ResourceLoader.class.getClassLoader().getResource(resourceName);
-    if (resourceUrl != null) {
-        return resourceUrl.getFile();
+    private Map<String, Object> readScenariosFromCsv(String csvPath) throws IOException {
+        Map<String, Object> scenariosMap = new HashMap<>();
+
+        // Adjust ResourceUtil usage or your InputStream retrieval as needed
+        try (
+            InputStream inputStream = ResourceUtil.getResourceAsStream(csvPath);
+            Reader reader = new BufferedReader(new InputStreamReader(inputStream));
+            CSVParser csvParser = new CSVParser(reader,
+                CSVFormat.DEFAULT
+                    .withFirstRecordAsHeader()
+                    .withIgnoreHeaderCase(true)
+                    .withTrim(true))
+        ) {
+            for (CSVRecord record : csvParser) {
+                // You can adjust the column names below to match your CSV headers
+                String scenarioName = record.get("scenario");
+                if (scenarioName == null || scenarioName.isEmpty()) {
+                    throw new IllegalArgumentException("Scenario name is null or empty in row: " + record.getRecordNumber());
+                }
+
+                double defaultTps   = parseDoubleSafe(record.get("default tps"));
+                double prodTps      = parseDoubleSafe(record.get("prod tps"));
+                double prodWeight   = parseDoubleSafe(record.get("prod weight"));
+                double deltaTps     = parseDoubleSafe(record.get("delta tps"));
+                double deltaWeight  = parseDoubleSafe(record.get("delta weight"));
+
+                // Construct your TPSData (as in your original code)
+                var tpsData = new TPSData(defaultTps, prodTps, prodWeight, deltaTps, deltaWeight);
+
+                // Run whatever calculations you do (example: finalTps)
+                var finalTps = MaxPsCalculator.calculateFinalTps(tpsData);
+
+                // Build a value map. Adjust contents as needed
+                Map<String, Object> valueMap = Map.of("tps", finalTps);
+                scenariosMap.put(scenarioName, valueMap);
+            }
+        }
+
+        return scenariosMap;
     }
 
-    // 3. If neither approach works, throw an error
-    throw new IllegalArgumentException("Resource not found: " + resourceName);
+    // Helper method to handle null/empty strings safely
+    private double parseDoubleSafe(String value) {
+        if (value == null || value.isBlank()) {
+            return 0.0;
+        }
+        return Double.parseDouble(value);
+    }
 }
