@@ -4,41 +4,84 @@ import yaml
 import networkx as nx
 
 from bokeh.plotting import figure, show
-from bokeh.models import (ColumnDataSource, HoverTool, TapTool, CustomJS)
+from bokeh.models import ColumnDataSource, HoverTool, TapTool, CustomJS
 from bokeh.io import output_file
+import draw_bokeh
 
 def find_yaml_files(directory):
     """
-    Recursively searches for files with .yml or .yaml extensions
-    in the specified directory and returns a list of absolute paths.
+    Recursively searches for .yml or .yaml in the specified directory
+    and returns a list of absolute paths 
     """
     pattern_yml = os.path.join(directory, '**', '*.yml')
     pattern_yaml = os.path.join(directory, '**', '*.yaml')
 
     files = glob.glob(pattern_yml, recursive=True) + glob.glob(pattern_yaml, recursive=True)
-    return [os.path.abspath(f) for f in files]
+    return list(set(os.path.abspath(f) for f in files))
+
+def find_yaml_refs(item, base_dir):
+    """
+    Recursively walks through a dict/list structure to find references
+    to other YAML files via 'template' or 'extends'.
+    Returns a list of absolute paths to those referenced .yml/.yaml files.
+
+    Specifically handles cases where the reference starts with:
+        '03.azure-pipelines/...'
+    by stripping that prefix so paths won't duplicate when joined with base_dir.
+    """
+    refs = []
+
+    if isinstance(item, dict):
+        for k, v in item.items():
+            if k in ['template', 'extends']:
+                # If this value is a string (and ends with .yml/.yaml)
+                if isinstance(v, str) and v.lower().endswith(('.yml', '.yaml')):
+                    if v.startswith("03.azure-pipelines/"):
+                        # Strip '03.azure-pipelines/'
+                        stripped = v[len("03.azure-pipelines/"):]
+                        dep_path = os.path.abspath(os.path.join(base_dir, stripped))
+                    else:
+                        dep_path = os.path.abspath(os.path.join(base_dir, v))
+                    refs.append(dep_path)
+
+                # If this value is a list of possible references
+                elif isinstance(v, list):
+                    for entry in v:
+                        if isinstance(entry, str) and entry.lower().endswith(('.yml', '.yaml')):
+                            if entry.startswith("/03.azure-pipelines/"):
+                                stripped = entry[len("/03.azure-pipelines/"):]
+                                dep_path = os.path.abspath(os.path.join(base_dir, stripped))
+                            else:
+                                dep_path = os.path.abspath(os.path.join(base_dir, entry))
+                            refs.append(dep_path)
+
+                # If 'extends'/'template' is itself a dictionary, recurse deeper
+                elif isinstance(v, dict):
+                    refs.extend(find_yaml_refs(v, base_dir))
+
+            # Recurse deeper for all other keys
+            refs.extend(find_yaml_refs(v, base_dir))
+
+    elif isinstance(item, list):
+        for element in item:
+            refs.extend(find_yaml_refs(element, base_dir))
+
+    return refs
 
 def parse_pipeline_file(yaml_file):
     """
-    Parses a YAML file and returns a dictionary with keys:
-      - 'dependencies': list of YAML file paths this file references
-      - 'python_scripts': list of .py files mentioned in the file
-      - 'schedules': list of any schedules found in this file
-
-    This is a naive approach: 
-      - We look for 'template' or 'extends' for YAML dependencies.
-      - We do a broad check for any .py references.
-      - We look at top-level 'schedules' (if it exists).
+    Parses a YAML file and returns a dict with:
+      - 'dependencies': list of YAML file paths it references (via "template" or "extends")
+      - 'triggers': list of trigger definitions found (formatted as strings)
+      - 'schedules': list of schedules/cron definitions found (formatted as strings)
     """
     data = {
         'dependencies': [],
-        'python_scripts': [],
+        'triggers': [],
         'schedules': []
     }
-
-    base_dir = os.path.dirname(yaml_file)
-
-    # Safely load the YAML
+    pipeline_dir = os.path.dirname(yaml_file)
+    base_dir = os.path.dirname(pipeline_dir)
     try:
         with open(yaml_file, 'r', encoding='utf-8') as f:
             content = yaml.safe_load(f) or {}
@@ -46,201 +89,363 @@ def parse_pipeline_file(yaml_file):
         print(f"Warning: Could not parse {yaml_file}. Error: {e}")
         return data
 
-    # If not a dict, nothing to do
-    if not isinstance(content, dict):
-        return data
+    # 1) Extract dependencies using the existing find_yaml_refs function.
+    deps = find_yaml_refs(content, base_dir)
+    data['dependencies'].extend(deps)
 
-    # 1. Find YAML dependencies (template/extends)
-    for key in {'template', 'extends'}:
-        if key in content:
-            value = content[key]
-            if isinstance(value, str):
-                if value.endswith(('.yml', '.yaml')):
-                    dep_path = os.path.abspath(os.path.join(base_dir, value))
-                    data['dependencies'].append(dep_path)
-            elif isinstance(value, list):
-                for v in value:
-                    if isinstance(v, str) and v.endswith(('.yml', '.yaml')):
-                        dep_path = os.path.abspath(os.path.join(base_dir, v))
-                        data['dependencies'].append(dep_path)
-
-    # 2. Find .py references (very naive approach)
-    #    We'll do a recursive scan over the dictionary to find any string
-    #    that ends with '.py'.
-    def find_python_refs(item):
-        if isinstance(item, str):
-            if item.endswith('.py'):
-                abs_py = os.path.abspath(os.path.join(base_dir, item))
-                data['python_scripts'].append(abs_py)
-        elif isinstance(item, dict):
-            for v in item.values():
-                find_python_refs(v)
+    # 2) Recursively extract any trigger definitions (the key "trigger", regardless of nesting).
+    def find_trigger_definitions(item):
+        triggers = []
+        if isinstance(item, dict):
+            for key, value in item.items():
+                if key.lower() == "trigger":
+                    triggers.append(value)
+                else:
+                    triggers.extend(find_trigger_definitions(value))
         elif isinstance(item, list):
-            for v in item:
-                find_python_refs(v)
+            for element in item:
+                triggers.extend(find_trigger_definitions(element))
+        return triggers
 
-    find_python_refs(content)
+    found_triggers = find_trigger_definitions(content)
+    formatted_triggers = []
+    for trig in found_triggers:
+        if isinstance(trig, (str, int, float, bool)):
+            formatted_triggers.append(str(trig))
+        else:
+            # Dump using block style for readability.
+            formatted_triggers.append(yaml.dump(trig, default_flow_style=False))
+    data['triggers'] = formatted_triggers
 
-    # 3. Find schedules (assuming top-level "schedules" key,
-    #    typical in Azure Pipelines syntax)
+    # 3) Extract schedule/cron definitions.
+    # First, take any top-level "schedules" field.
+    top_schedules = []
     schedules = content.get('schedules')
     if schedules and isinstance(schedules, list):
-        # Each schedule might have a cron, or displayName, etc.
-        # We'll just store them as a string here.
-        data['schedules'] = [str(sched) for sched in schedules]
+        for sched in schedules:
+            if isinstance(sched, dict):
+                top_schedules.append(yaml.dump(sched, default_flow_style=False))
+            else:
+                top_schedules.append(str(sched))
+
+    # Then, recursively search for any nested "cron" keys.
+    def find_cron_definitions(item):
+        results = []
+        if isinstance(item, dict):
+            for key, value in item.items():
+                if key.lower() == "cron":
+                    results.append(str(value))
+                else:
+                    results.extend(find_cron_definitions(value))
+        elif isinstance(item, list):
+            for element in item:
+                results.extend(find_cron_definitions(element))
+        return results
+
+    nested_cron = find_cron_definitions(content)
+    all_schedules = top_schedules + nested_cron
+    # Remove duplicates while preserving order.
+    unique_schedules = list(dict.fromkeys(all_schedules))
+    data['schedules'] = unique_schedules
 
     return data
 
+
 def build_dependency_graph(yaml_files):
     """
-    Builds a directed graph of YAML file dependencies.
-    Each file is a node. 
-    - Edges (A -> B) indicate A depends on B (for referencing other YAML files).
-    - Also collects metadata (python scripts, schedules) for each node.
+    Builds a directed graph of YAML file dependencies:
+     - Nodes: each pipeline (YAML file)
+     - Edges: A->B means pipeline A depends on pipeline B
+    Returns (G, file_metadata) where G is a DiGraph and
+    file_metadata is a dict keyed by filename with extra info.
     """
     G = nx.DiGraph()
-
-    # We will store file-based metadata in a dict for easy lookup
     file_metadata = {}
 
-    # Parse each file for dependencies, scripts, schedules
     for yf in yaml_files:
         metadata = parse_pipeline_file(yf)
         file_metadata[yf] = metadata
-        G.add_node(yf)  # add node if not already present
+        G.add_node(yf)
 
     # Add edges for dependencies
     for yf in yaml_files:
-        deps = file_metadata[yf]['dependencies']
-        for dep in deps:
-            # Only add an edge if the dependency is actually in our set of YAML files
+        for dep in file_metadata[yf]['dependencies']:
             if dep in yaml_files:
                 G.add_edge(yf, dep)
+            else:
+                # Uncomment if you want debugging about missing references
+                # print(f"DEBUG: {dep} not in yaml_files.")
+                pass
 
     return G, file_metadata
 
-def draw_graph_bokeh(G, file_metadata, output_html="yaml_dependencies.html"):
-    """
-    Draws the dependency graph using Bokeh for interactive visualization.
-    Hovering shows file info; tapping a node shows an alert with metadata.
-    """
-    # Compute layout
-    pos = nx.spring_layout(G, k=0.5, seed=42)
-
-    nodes = list(G.nodes())
-    edges = list(G.edges())
-
-    # Map node -> index
-    node_indices = {node: i for i, node in enumerate(nodes)}
-
-    # Extract coords
-    x_coords = [pos[n][0] for n in nodes]
-    y_coords = [pos[n][1] for n in nodes]
-
-    # Prepare edge coordinates
-    edge_xs = []
-    edge_ys = []
-    for start, end in edges:
-        edge_xs.append([pos[start][0], pos[end][0]])
-        edge_ys.append([pos[start][1], pos[end][1]])
-
-    # Build node metadata for Bokeh
-    # Convert any lists to comma-separated strings for nicer display
-    python_scripts_strs = []
-    schedules_strs = []
-    for n in nodes:
-        md = file_metadata[n]
-        py_str = ', '.join(md['python_scripts']) if md['python_scripts'] else "None"
-        sch_str = ', '.join(md['schedules']) if md['schedules'] else "None"
-        python_scripts_strs.append(py_str)
-        schedules_strs.append(sch_str)
-
-    # Create ColumnDataSources
-    node_source = ColumnDataSource(data=dict(
-        x=x_coords,
-        y=y_coords,
-        yaml_file=nodes,
-        python_scripts=python_scripts_strs,
-        schedules=schedules_strs
-    ))
-
-    edge_source = ColumnDataSource(data=dict(
-        xs=edge_xs,
-        ys=edge_ys
-    ))
-
-    # Create figure
-    p = figure(
-        title="Azure YAML Pipeline Dependencies (Interactive)",
-        x_range=(-1.1, 1.1),
-        y_range=(-1.1, 1.1),
-        tools="pan,wheel_zoom,reset,save",
-        active_scroll="wheel_zoom"
-    )
-
-    # Draw edges
-    p.multi_line('xs', 'ys', source=edge_source, line_width=2, line_color="#888")
-
-    # Draw nodes
-    r_nodes = p.circle('x', 'y',
-                       source=node_source,
-                       size=15,
-                       fill_color="lightblue",
-                       line_color="black")
-
-    # Hover tool
-    hover_tool = HoverTool(
-        renderers=[r_nodes],
-        tooltips=[
-            ("File", "@yaml_file"),
-            ("Python Scripts", "@python_scripts"),
-            ("Schedules", "@schedules")
-        ]
-    )
-    p.add_tools(hover_tool)
-
-    # Tap tool (click a node)
-    tap_tool = TapTool(renderers=[r_nodes])
-    p.add_tools(tap_tool)
-
-    # JavaScript callback to show an alert with more info
-    callback = CustomJS(args=dict(source=node_source), code="""
-        const indices = source.selected.indices;
-        if (indices.length > 0) {
-            const i = indices[0];
-            const filePath = source.data['yaml_file'][i];
-            const pyScripts = source.data['python_scripts'][i];
-            const schedules = source.data['schedules'][i];
-            alert(
-                "FILE: " + filePath 
-                + "\\nPYTHON SCRIPTS: " + pyScripts
-                + "\\nSCHEDULES: " + schedules
-            );
-        }
-    """)
-    p.js_on_event('tap', callback)
-
-    # Write to HTML and display
-    output_file(output_html)
-    show(p)
-
 def main(directory):
     """
-    Main function to orchestrate finding YAML files, building the graph,
-    and displaying the visualization using Bokeh, with extended metadata:
-      - .py references
-      - schedules
+    Main function: 
+     1) Find YAML files 
+     2) Build the dependency graph 
+     3) Visualize with Bokeh.
     """
     yaml_files = find_yaml_files(directory)
     print(f"Found {len(yaml_files)} YAML files.")
     G, file_metadata = build_dependency_graph(yaml_files)
-    draw_graph_bokeh(G, file_metadata, output_html="yaml_dependencies.html")
+    print(f"Found {len(list(G.edges()))} edges (dependencies).")
+    draw_bokeh.draw_graph_bokeh(G, file_metadata, "yaml_dependencies.html")
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <directory>")
-        sys.exit(1)
 
-    directory_to_scan = sys.argv[1]
+    directory_to_scan = ""
     main(directory_to_scan)
+
+
+
+###--------------------
+
+
+from bokeh.plotting import figure, show
+from bokeh.models import ColumnDataSource, HoverTool, TapTool, CustomJS, LabelSet
+from bokeh.io import output_file
+import networkx as nx
+import os
+
+
+def draw_graph_bokeh(G, file_metadata, output_html="yaml_dependencies.html"):
+    import numpy as np
+    from bokeh.models import ColumnDataSource, LabelSet, HoverTool, TextInput, TapTool, BoxSelectTool, LassoSelectTool, CustomJS
+    from bokeh.layouts import column
+    from bokeh.plotting import figure, output_file, show
+
+    # Compute levels (assuming G is a DAG)
+    levels = {}
+    for node in nx.topological_sort(G):
+        if G.in_degree(node) == 0:
+            levels[node] = 0
+        else:
+            levels[node] = max(levels[p] for p in G.predecessors(node)) + 1
+
+    # Group nodes by level.
+    level_nodes = {}
+    for node, level in levels.items():
+        level_nodes.setdefault(level, []).append(node)
+
+    x_spacing = 300
+    pos = {}
+    # For level 0, order nodes so that:
+    #   Group 0 (red): nodes with triggers.
+    #   Group 1 (orange): nodes with schedules (but no triggers).
+    #   Group 2 (goldenrod): nodes with neither.
+    for level, nodes_in_level in level_nodes.items():
+        if level == 0:
+            def group_key(n):
+                triggers = file_metadata[n].get("triggers") or []
+                schedules = file_metadata[n].get("schedules") or []
+                if len(triggers) > 0:
+                    grp = 0
+                elif len(schedules) > 0:
+                    grp = 1
+                else:
+                    grp = 2
+                return (grp, n)
+            nodes_in_level.sort(key=group_key)
+        else:
+            nodes_in_level.sort()
+        n_nodes = len(nodes_in_level)
+        # np.linspace so that the first node gets the highest y value.
+        y_positions = [0] if n_nodes == 1 else np.linspace(200, -200, n_nodes)
+        for i, node in enumerate(nodes_in_level):
+            pos[node] = (level * x_spacing, y_positions[i])
+
+    # Prepare node data.
+    nodes_order = list(pos.keys())
+    x_coords = [pos[n][0] for n in nodes_order]
+    y_coords = [pos[n][1] for n in nodes_order]
+    yaml_files = [os.path.basename(n) for n in nodes_order]
+
+    # Build string representations for triggers and schedules.
+    triggers_strs = []
+    schedules_strs = []
+    for n in nodes_order:
+        md = file_metadata[n]
+        trig_str = "\n".join(md.get("triggers") or []) if md.get("triggers") else "None"
+        sch_str = "\n".join(md.get("schedules") or []) if md.get("schedules") else "None"
+        triggers_strs.append(trig_str)
+        schedules_strs.append(sch_str)
+
+    # Set node colors.
+    node_colors = []
+    for n in nodes_order:
+        if G.in_degree(n) == 0:
+            if (file_metadata[n].get("triggers") or []) != []:
+                node_colors.append("red")
+            elif (file_metadata[n].get("schedules") or []) != []:
+                node_colors.append("orange")
+            else:
+                node_colors.append("goldenrod")
+        else:
+            node_colors.append("deepskyblue")
+    
+    node_alpha = [1] * len(nodes_order)
+
+    # Compute related nodes (ancestors, descendants, self) for each node.
+    node_indices = {node: i for i, node in enumerate(nodes_order)}
+    related_list = []
+    for n in nodes_order:
+        related_nodes = set(nx.ancestors(G, n)) | set(nx.descendants(G, n)) | {n}
+        related_indices = [node_indices[r] for r in related_nodes if r in node_indices]
+        related_list.append(related_indices)
+
+    node_source = ColumnDataSource(data=dict(
+        x=x_coords,
+        y=y_coords,
+        yaml_file=yaml_files,
+        triggers=triggers_strs,
+        schedules=schedules_strs,
+        color=node_colors,
+        node_alpha=node_alpha,
+        related=related_list
+    ))
+
+    # Prepare edge data with curved (quadratic) lines.
+    edge_x0, edge_y0, edge_x1, edge_y1 = [], [], [], []
+    control_x, control_y = [], []
+    edge_start_idx, edge_end_idx, edge_alpha = [], [], []
+    for start, end in G.edges():
+        if start in pos and end in pos and start in node_indices and end in node_indices:
+            x0, y0 = pos[start]
+            x1, y1 = pos[end]
+            cx = (x0 + x1) / 2
+            cy = (y0 + y1) / 2 + 50
+            edge_x0.append(x0)
+            edge_y0.append(y0)
+            edge_x1.append(x1)
+            edge_y1.append(y1)
+            control_x.append(cx)
+            control_y.append(cy)
+            edge_start_idx.append(node_indices[start])
+            edge_end_idx.append(node_indices[end])
+            edge_alpha.append(0.6)
+
+    edge_source = ColumnDataSource(data=dict(
+        x0=edge_x0,
+        y0=edge_y0,
+        x1=edge_x1,
+        y1=edge_y1,
+        cx=control_x,
+        cy=control_y,
+        start_index=edge_start_idx,
+        end_index=edge_end_idx,
+        alpha=edge_alpha
+    ))
+
+    # Create figure with additional selection tools.
+    p = figure(
+        title="Azure YAML Pipeline Dependencies (Interactive)",
+        width=4000,
+        height=3000,
+        tools="pan,wheel_zoom,box_select,lasso_select,reset,save",
+        active_scroll="wheel_zoom"
+    )
+    p.y_range.start = max(y_coords) + 50
+    p.y_range.end = min(y_coords) - 50
+
+    p.quadratic(x0="x0", y0="y0", x1="x1", y1="y1", cx="cx", cy="cy",
+                source=edge_source, line_width=2, line_color="#888", line_alpha="alpha")
+
+    # Draw nodes.
+    r_nodes = p.circle("x", "y", source=node_source, size=15,
+                       fill_color="color", fill_alpha="node_alpha", line_color="black")
+
+    # Enable TapTool (for single clicks) and multi-select (via box or lasso).
+    tap_tool = TapTool(renderers=[r_nodes])
+    p.add_tools(tap_tool)
+
+    # Callback to highlight connections for all selected nodes.
+    multi_select_callback = CustomJS(args=dict(node_source=node_source, edge_source=edge_source), code="""
+        const selected = node_source.selected.indices;
+        const n_nodes = node_source.data.x.length;
+        const n_edges = edge_source.data.x0.length;
+        let union = new Set();
+        // Compute union of related nodes for all selected nodes.
+        for (let j = 0; j < selected.length; j++) {
+            let sel = selected[j];
+            let related = node_source.data.related[sel];
+            for (let k = 0; k < related.length; k++) {
+                union.add(related[k]);
+            }
+        }
+        let new_node_alpha = new Array(n_nodes).fill(0.1);
+        let new_edge_alpha = new Array(n_edges).fill(0.1);
+        // If nothing is selected, show all.
+        if (selected.length === 0) {
+            new_node_alpha = new Array(n_nodes).fill(1);
+            new_edge_alpha = new Array(n_edges).fill(0.6);
+        } else {
+            for (let i = 0; i < n_nodes; i++) {
+                if (union.has(i)) {
+                    new_node_alpha[i] = 1;
+                }
+            }
+            for (let i = 0; i < n_edges; i++) {
+                const start = edge_source.data.start_index[i];
+                const end = edge_source.data.end_index[i];
+                if (union.has(start) && union.has(end)) {
+                    new_edge_alpha[i] = 0.8;
+                }
+            }
+        }
+        node_source.data.node_alpha = new_node_alpha;
+        edge_source.data.alpha = new_edge_alpha;
+        node_source.change.emit();
+        edge_source.change.emit();
+    """)
+    node_source.selected.js_on_change("indices", multi_select_callback)
+
+    labels = LabelSet(x="x", y="y", text="yaml_file",
+                      x_offset=-50, y_offset=0, source=node_source,
+                      text_color="color", text_align="right")
+    p.add_layout(labels)
+
+    hover_tool = HoverTool(
+        renderers=[r_nodes],
+        tooltips="""
+<div style="white-space: pre-wrap; font-size: 12px;">
+  <b>File:</b> @yaml_file<br>
+  <b>Triggers:</b> @triggers<br>
+  <b>Schedules:</b> @schedules
+</div>
+"""
+    )
+    p.add_tools(hover_tool)
+
+    text_input = TextInput(title="Filter pipelines (partial match):", placeholder="Type a pipeline name")
+    filter_callback = CustomJS(args=dict(node_source=node_source, edge_source=edge_source, text_input=text_input), code="""
+        var search_value = text_input.value.trim().toLowerCase();
+        var n_nodes = node_source.data.x.length;
+        var new_node_alpha = new Array(n_nodes);
+        for (var i = 0; i < n_nodes; i++) {
+            var name = node_source.data.yaml_file[i].toLowerCase();
+            new_node_alpha[i] = (search_value === "" || name.indexOf(search_value) !== -1) ? 1 : 0.1;
+        }
+        var n_edges = edge_source.data.x0.length;
+        var new_edge_alpha = new Array(n_edges).fill(0.1);
+        for (var i = 0; i < n_edges; i++) {
+            var start = edge_source.data.start_index[i];
+            var end = edge_source.data.end_index[i];
+            if (new_node_alpha[start] === 1 || new_node_alpha[end] === 1) {
+                new_edge_alpha[i] = 0.8;
+            }
+        }
+        node_source.data.node_alpha = new_node_alpha;
+        edge_source.data.alpha = new_edge_alpha;
+        node_source.change.emit();
+        edge_source.change.emit();
+    """)
+    text_input.js_on_change("value", filter_callback)
+
+    layout = column(text_input, p)
+    output_file(output_html)
+    show(layout)
+
+
+
