@@ -1,171 +1,566 @@
-import requests
-import csv
-
-# Define the query string
-query = "query=blah"
-
-# Define the endpoints as a dictionary for better readability
-endpoints = {
-    "myservice1": "http://abc.def.net/abcd/ef",
-    "myservice2": "http://xyz.def.net/abcd/ef",
-}
-
-# Construct full URLs with the query
-full_urls = {name: f"{url}?{query}" for name, url in endpoints.items()}
-
-# Define the cookie and headers
-cookies = {
-    "session_id": "your_cookie_value"  # Replace with your actual cookie name and value
-}
-
-headers = {
-    "Accept": "application/json"
-}
-
-# File to save the consolidated data
-csv_file = "metrics_data.csv"
-
-# Initialize the CSV file with a header
-with open(csv_file, mode='w', newline='', encoding='utf-8') as file:
-    writer = csv.writer(file)
-    # Write the header
-    writer.writerow(["service", "method", "pathTemplate", "tps"])
-
-
-columns = {
-    "service": 0,
-    "data_center": 1,
-    "method": 2,
-    "pathTemplate": 3,
-    "tps": 4,
-}
-
-# Helper function to filter rows by highest TPS for duplicate service/path_template/method
-def filter_highest_tps(rows):
-    unique_data = {}
-    for row in rows:
-        key = (
-            row[columns["service"]],
-            row[columns["pathTemplate"]],
-            row[columns["method"]],
-        )  # (service, pathTemplate, method)
-        tps = float(row[columns["tps"]]) if row[columns["tps"]] else 0  # Handle empty TPS values as 0
-        if key not in unique_data or tps > unique_data[key][columns["tps"]]:
-            unique_data[key] = row
-    return list(unique_data.values())
-
-
-# Iterate over each endpoint
-for service_name, url in full_urls.items():
-    print(f"Fetching data from {service_name} ({url})...")
-    try:
-        # Send the GET request with cookies and headers
-        response = requests.get(url, headers=headers, cookies=cookies)
-        if response.status_code == 200:
-            data = response.json()  # Parse the JSON response
-            
-            # Process the data
-            csv_data = []
-            if 'data' in data and 'result' in data['data']:
-                for item in data['data']['result']:
-                    metric = item.get('metric', {})
-                    service = metric.get('service', '')
-                    method = metric.get('method', '')
-                    path_template = metric.get('pathTemplate', '')
-                    tps = item.get('value', [])[1] if len(item.get('value', [])) > 1 else ''
-                    
-                    # Append extracted data to the list
-                    csv_data.append([service, method, path_template, tps])
-            
-            # Append the data to the CSV file
-            with open(csv_file, mode='a', newline='', encoding='utf-8') as file:
-                writer = csv.writer(file)
-                writer.writerows(csv_data)
-            
-            print(f"Data from {service_name} has been successfully added to {csv_file}")
-        else:
-            print(f"Failed to fetch data from {service_name}. HTTP Status Code: {response.status_code}")
-    except Exception as e:
-        print(f"An error occurred while processing {service_name}: {e}")
-
-print(f"All data has been consolidated into {csv_file}")
-
----------------------------------------------------------------------------------
-          
-import unittest
-from unittest.mock import patch, Mock
-import requests
-import csv
 import os
+import glob
+import yaml
+import networkx as nx
 
-class TestMetricsDataFetcher(unittest.TestCase):
-    @patch("requests.get")
-    def test_fetch_metrics_data(self, mock_get):
-        # Sample mocked response data
-        mock_response_data = {
-            "data": {
-                "result": [
-                    {
-                        "metric": {
-                            "service": "test_service",
-                            "method": "GET",
-                            "pathTemplate": "/test/path"
-                        },
-                        "value": [1690476800, "25.5"]
-                    }
-                ]
-            }
-        }
-        
-        # Configure the mock to return a response with the above JSON data
-        mock_get.return_value = Mock(status_code=200, json=lambda: mock_response_data)
-        
-        # Define endpoints and cookies for testing
-        endpoints = ["https://mock-endpoint.com/api/metrics"]
-        cookies = {"session_id": "mock_session_id"}
-        headers = {"Accept": "application/json"}
-        
-        # Test CSV file path
-        test_csv_file = "test_metrics_data.csv"
-        
-        # Initialize CSV file
-        with open(test_csv_file, mode='w', newline='', encoding='utf-8') as file:
-            writer = csv.writer(file)
-            writer.writerow(["service", "method", "pathTemplate", "tps"])
-        
-        # Run the script logic for the test
-        for url in endpoints:
-            response = requests.get(url, headers=headers, cookies=cookies)
-            if response.status_code == 200:
-                data = response.json()
-                csv_data = []
-                if 'data' in data and 'result' in data['data']:
-                    for item in data['data']['result']:
-                        metric = item.get('metric', {})
-                        service = metric.get('service', '')
-                        method = metric.get('method', '')
-                        path_template = metric.get('pathTemplate', '')
-                        tps = item.get('value', [])[1] if len(item.get('value', [])) > 1 else ''
-                        csv_data.append([service, method, path_template, tps])
-                
-                # Append data to the CSV file
-                with open(test_csv_file, mode='a', newline='', encoding='utf-8') as file:
-                    writer = csv.writer(file)
-                    writer.writerows(csv_data)
-        
-        # Verify the mock was called
-        mock_get.assert_called_once_with("https://mock-endpoint.com/api/metrics", headers=headers, cookies=cookies)
-        
-        # Verify the data was written to the file
-        with open(test_csv_file, mode='r', encoding='utf-8') as file:
-            rows = list(csv.reader(file))
-            self.assertEqual(len(rows), 2)  # Header + 1 data row
-            self.assertEqual(rows[1], ["test_service", "GET", "/test/path", "25.5"])
-        
-        # Cleanup the test CSV file
-        if os.path.exists(test_csv_file):
-            os.remove(test_csv_file)
+from bokeh.plotting import figure, show
+from bokeh.models import ColumnDataSource, HoverTool, TapTool, CustomJS
+from bokeh.io import output_file
+import draw_bokeh
+
+def find_yaml_files(directory):
+    """
+    Recursively searches for .yml or .yaml files in the specified directory
+    and returns a list of normalized absolute paths.
+    """
+    pattern_yml = os.path.join(directory, '**', '*.yml')
+    pattern_yaml = os.path.join(directory, '**', '*.yaml')
+    files = glob.glob(pattern_yml, recursive=True) + glob.glob(pattern_yaml, recursive=True)
+    # Normalize and return unique paths.
+    return list(set(os.path.normpath(os.path.abspath(f)) for f in files))
+
+
+def find_yaml_refs(item, base_dir):
+    """
+    Recursively walks through a dict/list structure to find references
+    to other YAML files via 'template' or 'extends'.
+    Returns a list of absolute, normalized paths to those referenced .yml/.yaml files.
+    
+    Dependency strings are expected to include the fixed segment "/03.azure-pipelines/".
+    The function removes the leading slash and the "03.azure-pipelines/" portion,
+    then joins the remainder to base_dir.
+    """
+    refs = []
+
+    if isinstance(item, dict):
+        for k, v in item.items():
+            if k in ['template', 'extends']:
+                # If value is a string ending with .yml or .yaml:
+                if isinstance(v, str) and v.lower().endswith(('.yml', '.yaml')):
+                    if v.startswith("/03.azure-pipelines/") or v.startswith("03.azure-pipelines/"):
+                        stripped = v.lstrip("/")  # remove leading slash if present
+                        stripped = stripped[len("03.azure-pipelines/"):]  # remove fixed folder segment
+                        dep_path = os.path.normpath(os.path.join(base_dir, stripped))
+                    else:
+                        dep_path = os.path.normpath(os.path.join(base_dir, v))
+                    refs.append(dep_path)
+                # If value is a list of references:
+                elif isinstance(v, list):
+                    for entry in v:
+                        if isinstance(entry, str) and entry.lower().endswith(('.yml', '.yaml')):
+                            if entry.startswith("/03.azure-pipelines/") or entry.startswith("03.azure-pipelines/"):
+                                stripped = entry.lstrip("/")
+                                stripped = stripped[len("03.azure-pipelines/"):]
+                                dep_path = os.path.normpath(os.path.join(base_dir, stripped))
+                            else:
+                                dep_path = os.path.normpath(os.path.join(base_dir, entry))
+                            refs.append(dep_path)
+                # If the template/extends is itself a dict, dive deeper:
+                elif isinstance(v, dict):
+                    refs.extend(find_yaml_refs(v, base_dir))
+            # Recurse for all other keys
+            refs.extend(find_yaml_refs(v, base_dir))
+    elif isinstance(item, list):
+        for element in item:
+            refs.extend(find_yaml_refs(element, base_dir))
+    return refs
+
+
+def parse_pipeline_file(yaml_file, pipelines_root):
+    """
+    Parses a YAML file and returns a dict with:
+      - 'dependencies': list of YAML file paths it references (via "template" or "extends")
+      - 'triggers': list of trigger definitions found (formatted as strings)
+      - 'schedules': list of schedules/cron definitions found (formatted as strings)
+    The pipelines_root is used as the base for dependency resolution.
+    """
+    data = {
+        'dependencies': [],
+        'triggers': [],
+        'schedules': []
+    }
+    # Use the provided pipelines_root as the base.
+    base_dir = pipelines_root
+
+    try:
+        with open(yaml_file, 'r', encoding='utf-8') as f:
+            content = yaml.safe_load(f) or {}
+    except Exception as e:
+        print(f"Warning: Could not parse {yaml_file}. Error: {e}")
+        return data
+
+    # Extract dependencies.
+    deps = find_yaml_refs(content, base_dir)
+    data['dependencies'].extend(deps)
+
+    # Extract triggers (any key named "trigger", regardless of nesting).
+    def find_trigger_definitions(item):
+        triggers = []
+        if isinstance(item, dict):
+            for key, value in item.items():
+                if key.lower() == "trigger":
+                    triggers.append(value)
+                else:
+                    triggers.extend(find_trigger_definitions(value))
+        elif isinstance(item, list):
+            for element in item:
+                triggers.extend(find_trigger_definitions(element))
+        return triggers
+
+    found_triggers = find_trigger_definitions(content)
+    formatted_triggers = []
+    for trig in found_triggers:
+        if isinstance(trig, (str, int, float, bool)):
+            formatted_triggers.append(str(trig))
+        else:
+            formatted_triggers.append(yaml.dump(trig, default_flow_style=False))
+    data['triggers'] = formatted_triggers
+
+    # Extract schedules.
+    top_schedules = []
+    schedules = content.get('schedules')
+    if schedules and isinstance(schedules, list):
+        for sched in schedules:
+            if isinstance(sched, dict):
+                top_schedules.append(yaml.dump(sched, default_flow_style=False))
+            else:
+                top_schedules.append(str(sched))
+
+    def find_cron_definitions(item):
+        results = []
+        if isinstance(item, dict):
+            for key, value in item.items():
+                if key.lower() == "cron":
+                    results.append(str(value))
+                else:
+                    results.extend(find_cron_definitions(value))
+        elif isinstance(item, list):
+            for element in item:
+                results.extend(find_cron_definitions(element))
+        return results
+
+    nested_cron = find_cron_definitions(content)
+    all_schedules = top_schedules + nested_cron
+    unique_schedules = list(dict.fromkeys(all_schedules))
+    data['schedules'] = unique_schedules
+
+    return data
+
+
+def build_dependency_graph(yaml_files, pipelines_root):
+    """
+    Builds a directed graph of YAML file dependencies:
+      - Nodes: each pipeline (YAML file)
+      - Edges: A -> B means pipeline A depends on pipeline B.
+    Returns (G, file_metadata) where G is a DiGraph and file_metadata is a dict keyed by filename.
+    """
+    G = nx.DiGraph()
+    file_metadata = {}
+
+    for yf in yaml_files:
+        metadata = parse_pipeline_file(yf, pipelines_root)
+        file_metadata[yf] = metadata
+        G.add_node(yf)
+
+    # Add edges for dependencies.
+    for yf in yaml_files:
+        for dep in file_metadata[yf]['dependencies']:
+            if dep in yaml_files:
+                G.add_edge(yf, dep)
+            else:
+                # For debugging:
+                # print(f"DEBUG: Dependency {dep} (from {yf}) not found among discovered YAML files.")
+                pass
+
+    return G, file_metadata
+
+
+def main(directory):
+    """
+    Main function:
+      1) Finds YAML files.
+      2) Builds the dependency graph.
+      3) Visualizes the graph with Bokeh.
+    """
+    yaml_files = find_yaml_files(directory)
+    print(f"Found {len(yaml_files)} YAML files.")
+
+    # Compute the pipelines root once.
+    pipelines_root = os.path.normpath(os.path.join(directory, "03.azure-pipelines"))
+    print("Using pipelines root:", pipelines_root)
+
+    G, file_metadata = build_dependency_graph(yaml_files, pipelines_root)
+    print(f"Found {len(list(G.edges()))} edges (dependencies).")
+    draw_bokeh.draw_graph_bokeh(G, file_metadata, "yaml_dependencies.html")
+
 
 if __name__ == "__main__":
-    unittest.main()
+    import sys
+
+    # Adjust this path to your scan directory.
+    directory_to_scan = "/Users/sarabande/piplineautomation/data/"
+    main(directory_to_scan)
+
+
+-------
+
+
+
+
+from bokeh.plotting import figure, show
+from bokeh.models import ColumnDataSource, HoverTool, TapTool, CustomJS, LabelSet, TextInput, Legend, LegendItem
+from bokeh.io import output_file
+from bokeh.layouts import column
+import networkx as nx
+import os
+import numpy as np
+
+def draw_graph_bokeh(G, file_metadata, output_html="yaml_dependencies.html"):
+    # Compute levels (assuming G is a DAG)
+    levels = {}
+    for node in nx.topological_sort(G):
+        if G.in_degree(node) == 0:
+            levels[node] = 0
+        else:
+            levels[node] = max(levels[p] for p in G.predecessors(node)) + 1
+
+    # Group nodes by level
+    level_nodes = {}
+    for node, level in levels.items():
+        level_nodes.setdefault(level, []).append(node)
+
+    x_spacing = 300
+    pos = {}
+
+    def has_valid(entries):
+        """Check if triggers/schedules contain any non-empty & non-'none' entry."""
+        for item in entries or []:
+            s = str(item).strip().lower()
+            if not s or s == "none":
+                continue
+            if s.startswith("cron:"):
+                remainder = s.split(":", 1)[1].strip()
+                if not remainder or remainder == "none":
+                    continue
+            return True
+        return False
+
+    # Sort left-hand-side nodes so that green > red > orange > goldenrod
+    for level, nodes_in_level in level_nodes.items():
+        if level == 0:
+            def group_key(n):
+                tlist = file_metadata[n].get("triggers", [])
+                slist = file_metadata[n].get("schedules", [])
+                vt, vs = has_valid(tlist), has_valid(slist)
+                # 0=green,1=red,2=orange,3=gold
+                if vt and vs:
+                    return 0
+                elif vt:
+                    return 1
+                elif vs:
+                    return 2
+                else:
+                    return 3
+            nodes_in_level.sort(key=group_key)
+        else:
+            nodes_in_level.sort()
+
+        n_nodes = len(nodes_in_level)
+        y_positions = [0] if n_nodes == 1 else np.linspace(200, -200, n_nodes)
+        for i, node in enumerate(nodes_in_level):
+            pos[node] = (level * x_spacing, y_positions[i])
+
+    # Shift everything
+    shift_x = 80
+    shift_y = 0
+    for node, (x_val, y_val) in pos.items():
+        pos[node] = (x_val + shift_x, y_val + shift_y)
+
+    # Prepare node data
+    nodes_order = list(pos.keys())
+    x_coords = [pos[n][0] for n in nodes_order]
+    y_coords = [pos[n][1] for n in nodes_order]
+    yaml_files = [os.path.basename(n) for n in nodes_order]
+
+    triggers_strs = []
+    schedules_strs = []
+    for n in nodes_order:
+        md = file_metadata[n]
+        triggers_strs.append("\n".join(md.get("triggers", [])) if md.get("triggers") else "None")
+        schedules_strs.append("\n".join(md.get("schedules", [])) if md.get("schedules") else "None")
+
+    # Node colors
+    node_colors = []
+    for n in nodes_order:
+        if G.in_degree(n) == 0:
+            trig = file_metadata[n].get("triggers", [])
+            sch  = file_metadata[n].get("schedules", [])
+            vt, vs = has_valid(trig), has_valid(sch)
+            if vt and vs:
+                node_colors.append("darkgreen")
+            elif vt:
+                node_colors.append("red")
+            elif vs:
+                node_colors.append("orange")
+            else:
+                node_colors.append("goldenrod")
+        else:
+            node_colors.append("deepskyblue")
+
+    # Description placeholder
+    description_strs = ["" for _ in nodes_order]
+
+    node_alpha = [1]*len(nodes_order)
+    text_alpha = [1]*len(nodes_order)
+
+    # Precompute ancestors/descendants for highlighting
+    node_indices = {node: i for i, node in enumerate(nodes_order)}
+    related_list = []
+    for n in nodes_order:
+        rel = set(nx.ancestors(G, n)) | set(nx.descendants(G, n)) | {n}
+        rel_idx = [node_indices[r] for r in rel if r in node_indices]
+        related_list.append(rel_idx)
+
+    node_source = ColumnDataSource(data=dict(
+        x=x_coords,
+        y=y_coords,
+        yaml_file=yaml_files,
+        triggers=triggers_strs,
+        schedules=schedules_strs,
+        description=description_strs,
+        color=node_colors,
+        node_alpha=node_alpha,
+        text_alpha=text_alpha,
+        related=related_list
+    ))
+
+    # Edges
+    edge_x0, edge_y0, edge_x1, edge_y1 = [], [], [], []
+    control_x, control_y = [], []
+    edge_start_idx, edge_end_idx, edge_alpha_vals = [], [], []
+    for start, end in G.edges():
+        if start in pos and end in pos and start in node_indices and end in node_indices:
+            x0, y0 = pos[start]
+            x1, y1 = pos[end]
+            cx = (x0 + x1)/2
+            cy = (y0 + y1)/2 + 50
+            edge_x0.append(x0)
+            edge_y0.append(y0)
+            edge_x1.append(x1)
+            edge_y1.append(y1)
+            control_x.append(cx)
+            control_y.append(cy)
+            edge_start_idx.append(node_indices[start])
+            edge_end_idx.append(node_indices[end])
+            edge_alpha_vals.append(0.6)
+
+    edge_source = ColumnDataSource(data=dict(
+        x0=edge_x0,
+        y0=edge_y0,
+        x1=edge_x1,
+        y1=edge_y1,
+        cx=control_x,
+        cy=control_y,
+        start_index=edge_start_idx,
+        end_index=edge_end_idx,
+        alpha=edge_alpha_vals
+    ))
+
+    # Create figure
+    p = figure(
+        title="Azure YAML Pipeline Dependencies (Interactive)",
+        width=4000,
+        height=3000,
+        tools="pan,wheel_zoom,box_select,lasso_select,reset,save",
+        active_scroll="wheel_zoom"
+    )
+
+    p.x_range.start = 0
+    p.x_range.end   = max(x_coords) + 200
+    p.y_range.start = min(y_coords) + 10
+    p.y_range.end   = max(y_coords) + 30
+
+    # Edges as a quadratic
+    p.quadratic(
+        x0="x0", y0="y0", x1="x1", y1="y1",
+        cx="cx", cy="cy",
+        source=edge_source,
+        line_width=2,
+        line_color="#888",
+        line_alpha="alpha"
+    )
+
+    # Nodes
+    r_nodes = p.circle(
+        "x", "y",
+        source=node_source,
+        size=15,
+        fill_color="color",
+        fill_alpha="node_alpha",
+        line_color="black"
+    )
+
+    # Tap tool
+    tap_tool = TapTool(renderers=[r_nodes])
+    p.add_tools(tap_tool)
+
+    # Selection callback
+    multi_select_callback = CustomJS(args=dict(node_source=node_source, edge_source=edge_source), code="""
+        const selected = node_source.selected.indices;
+        const n_nodes = node_source.data.x.length;
+        const n_edges = edge_source.data.x0.length;
+
+        let union = new Set();
+        for (let j = 0; j < selected.length; j++){
+            let sel = selected[j];
+            let rel = node_source.data.related[sel];
+            for (let k = 0; k < rel.length; k++){
+                union.add(rel[k]);
+            }
+        }
+
+        let new_node_alpha = new Array(n_nodes).fill(0.1);
+        let new_text_alpha = new Array(n_nodes).fill(0.1);
+        let new_edge_alpha = new Array(n_edges).fill(0.1);
+
+        if (selected.length === 0){
+            new_node_alpha.fill(1);
+            new_text_alpha.fill(1);
+            new_edge_alpha.fill(0.6);
+        } else {
+            for (let i = 0; i < n_nodes; i++){
+                if (union.has(i)){
+                    new_node_alpha[i] = 1;
+                    new_text_alpha[i] = 1;
+                }
+            }
+            for (let i = 0; i < n_edges; i++){
+                let st = edge_source.data.start_index[i];
+                let en = edge_source.data.end_index[i];
+                if (union.has(st) && union.has(en)){
+                    new_edge_alpha[i] = 0.8;
+                }
+            }
+        }
+
+        node_source.data.node_alpha = new_node_alpha;
+        node_source.data.text_alpha = new_text_alpha;
+        edge_source.data.alpha = new_edge_alpha;
+
+        node_source.change.emit();
+        edge_source.change.emit();
+    """)
+    node_source.selected.js_on_change("indices", multi_select_callback)
+
+    # Labels
+    labels = LabelSet(
+        x="x",
+        y="y",
+        text="yaml_file",
+        x_offset=-50,
+        y_offset=0,
+        source=node_source,
+        text_color="color",
+        text_align="right",
+        text_alpha="text_alpha"
+    )
+    p.add_layout(labels)
+
+    # Hover tool (slightly bigger font, forced wider box)
+    hover_tool = HoverTool(
+        renderers=[r_nodes],
+        tooltips="""
+<div style="white-space: pre-wrap; font-size:16px; width:400px;">
+  <b>File:</b> @yaml_file<br>
+  <b>Triggers:</b> @triggers<br>
+  <b>Schedules:</b> @schedules<br>
+  <b>Description:</b> @description
+</div>
+"""
+    )
+    p.add_tools(hover_tool)
+
+    # Text input for filtering
+    text_input = TextInput(title="Filter pipelines (partial match):", placeholder="Type a pipeline name")
+
+    filter_callback = CustomJS(args=dict(node_source=node_source, edge_source=edge_source, text_input=text_input), code="""
+        var val = text_input.value.trim().toLowerCase();
+        var n_nodes = node_source.data.x.length;
+        var n_edges = edge_source.data.x0.length;
+
+        var matched = [];
+        for (var i=0; i<n_nodes; i++){
+            var name = node_source.data.yaml_file[i].toLowerCase();
+            if (name.indexOf(val) !== -1){
+                matched.push(i);
+            }
+        }
+
+        let union = new Set();
+        for (let m of matched){
+            let rel = node_source.data.related[m];
+            for (let r of rel){
+                union.add(r);
+            }
+        }
+
+        let new_node_alpha = new Array(n_nodes).fill(0.1);
+        let new_text_alpha = new Array(n_nodes).fill(0.1);
+        let new_edge_alpha = new Array(n_edges).fill(0.1);
+
+        if (val === ""){
+            new_node_alpha.fill(1);
+            new_text_alpha.fill(1);
+            new_edge_alpha.fill(0.6);
+        } else {
+            for (let i=0; i<n_nodes; i++){
+                if (union.has(i)){
+                    new_node_alpha[i] = 1;
+                    new_text_alpha[i] = 1;
+                }
+            }
+            for (let i=0; i<n_edges; i++){
+                let st = edge_source.data.start_index[i];
+                let en = edge_source.data.end_index[i];
+                if (union.has(st) && union.has(en)){
+                    new_edge_alpha[i] = 0.8;
+                }
+            }
+        }
+
+        node_source.data.node_alpha = new_node_alpha;
+        node_source.data.text_alpha = new_text_alpha;
+        edge_source.data.alpha = new_edge_alpha;
+
+        node_source.change.emit();
+        edge_source.change.emit();
+    """)
+    text_input.js_on_change("value", filter_callback)
+
+    # Create offscreen glyphs for legend to show correct colors (bigger size)
+    r_green  = p.circle(x=[999999], y=[999999], color="darkgreen",    size=15)
+    r_red    = p.circle(x=[999999], y=[999999], color="red",          size=15)
+    r_orange = p.circle(x=[999999], y=[999999], color="orange",       size=15)
+    r_yellow = p.circle(x=[999999], y=[999999], color="goldenrod",    size=15)
+    r_blue   = p.circle(x=[999999], y=[999999], color="deepskyblue",  size=15)
+
+    # Legend
+    legend = Legend(items=[
+        LegendItem(label="Green: Triggered and Scheduled", renderers=[r_green]),
+        LegendItem(label="Red: Triggered",              renderers=[r_red]),
+        LegendItem(label="Orange: Scheduled",           renderers=[r_orange]),
+        LegendItem(label="Yellow: Not triggered nor scheduled",             renderers=[r_yellow]),
+        LegendItem(label="Blue: Used by other pipelines", renderers=[r_blue]),
+    ], location="top_left")
+
+    # Make legend text and glyphs bigger
+    legend.label_text_font_size = "12pt"
+    legend.glyph_width = 20
+    legend.glyph_height = 20
+
+    p.add_layout(legend)
+
+    layout = column(text_input, p)
+    output_file(output_html)
+    show(layout)
 
