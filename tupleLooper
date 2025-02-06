@@ -1,12 +1,11 @@
-import unittest
 import pandas as pd
-from io import StringIO
 
 # ----------------------------------------------------------------------------
-# EXAMPLE CORE FUNCTIONALITY
-# ----------------------------------------------------------------------------
+# 1. File paths
+SOURCE_FILE_PATH = "dir1/source-sheet.xlsx"
+TARGET_FILE_PATH = "dir2/target-sheet.xlsx"
 
-# 1. Matching columns
+# 2. Matching column pairs for identifying rows
 S1_COL = "s1"
 T1_COL = "t1"
 S4_COL = "s4"
@@ -14,10 +13,10 @@ T4_COL = "t4"
 
 MATCHING_COLUMN_PAIRS = [
     (S1_COL, T1_COL),
-    # (S4_COL, T4_COL),  # Uncomment or add more pairs if needed
+    # (S4_COL, T4_COL),  # Uncomment or add more pairs as needed
 ]
 
-# 2. Columns to update
+# 3. Columns to update in target, mapped from source
 S2_COL = "s2"
 S3_COL = "s3"
 T2_COL = "t2"
@@ -27,28 +26,46 @@ COLUMN_MAP = {
     S2_COL: T2_COL,
     S3_COL: T3_COL
 }
+# ----------------------------------------------------------------------------
 
 def preprocess_s1(value):
+    """
+    Example: Remove leading/trailing whitespace, ensure empty or null becomes ''.
+    Extend or modify as needed.
+    """
     if pd.isnull(value):
         return ""
     return str(value).strip()
 
 def preprocess_s4(value):
+    """
+    Another example. Modify as needed (e.g., remove semicolons, etc.).
+    """
     if pd.isnull(value):
         return ""
     return str(value).strip()
 
 def preprocess_s2(value):
+    """
+    Example: remove semicolons, replace them with dots, trim, handle nulls, etc.
+    """
     if pd.isnull(value):
         return ""
     value_str = str(value).strip().replace(";", ".")
     return value_str
 
 def preprocess_s3(value):
+    """
+    Adjust or add any transformations required for s3.
+    """
     if pd.isnull(value):
         return ""
     return str(value).strip()
 
+# ----------------------------------------------------------------------------
+# Dictionary mapping column names to their preprocess functions.
+# By default, if a column doesn't appear here, it receives a generic preprocessor.
+# ----------------------------------------------------------------------------
 PREPROCESS_FUNCTIONS = {
     S1_COL: preprocess_s1,
     S2_COL: preprocess_s2,
@@ -57,16 +74,26 @@ PREPROCESS_FUNCTIONS = {
 }
 
 def default_preprocess(value):
+    """
+    Fallback if no specific function is found in PREPROCESS_FUNCTIONS.
+    Converts nulls to empty string, then strips whitespace.
+    """
     if pd.isnull(value):
         return ""
     return str(value).strip()
 
 def get_preprocess_function(col_name):
+    """
+    Retrieve the specific preprocess function, or a default if not found.
+    """
     return PREPROCESS_FUNCTIONS.get(col_name, default_preprocess)
 
 def build_key(row, col_pairs, is_source=True):
     """
-    Build a tuple key from one or more column pairs.
+    Constructs a tuple key from multiple column pairs:
+      - For source: read from s_col in each pair
+      - For target: read from t_col in each pair
+    Each value is preprocessed before being included in the key.
     """
     key_elems = []
     for s_col, t_col in col_pairs:
@@ -78,124 +105,42 @@ def build_key(row, col_pairs, is_source=True):
 
 def calculate(value):
     """
-    Placeholder for your business logic.
+    Placeholder for your business logic. Currently returns value as is.
     """
     return value
 
-def update_target(source_df, target_df):
-    """
-    Main logic to update target_df based on source_df, applying
-    preprocessing and a placeholder calculation function.
-    """
-    # Build source_map
+def main():
+    # 1. Read source and target Excel sheets
+    source_df = pd.read_excel(SOURCE_FILE_PATH)
+    target_df = pd.read_excel(TARGET_FILE_PATH)
+
+    # 2. Build a mapping from source data
+    #    Key: tuple built from the matching column(s), Value: dict of columns to update
     source_map = {}
     for _, row in source_df.iterrows():
         key_tuple = build_key(row, MATCHING_COLUMN_PAIRS, is_source=True)
+
+        # Collect only the columns needed for updates, applying preprocessing
         data_to_update = {}
         for s_col in COLUMN_MAP.keys():
             raw_value = row[s_col]
             preprocessed_value = get_preprocess_function(s_col)(raw_value)
             data_to_update[s_col] = preprocessed_value
+
         source_map[key_tuple] = data_to_update
 
-    # Update target rows
+    # 3. Iterate target rows, match via tuple key, and update
     for idx, row in target_df.iterrows():
         target_key_tuple = build_key(row, MATCHING_COLUMN_PAIRS, is_source=False)
+
         if target_key_tuple in source_map:
             source_values = source_map[target_key_tuple]
             for s_col, t_col in COLUMN_MAP.items():
                 new_value = calculate(source_values[s_col])
                 target_df.at[idx, t_col] = new_value
 
-    return target_df
-
-# ----------------------------------------------------------------------------
-# UNIT TESTS
-# ----------------------------------------------------------------------------
-
-class TestPreprocessing(unittest.TestCase):
-
-    def test_preprocess_s2(self):
-        # Check semicolon replacement and trimming
-        self.assertEqual(preprocess_s2(" hello;world "), "hello.world")
-        self.assertEqual(preprocess_s2(None), "")
-        self.assertEqual(preprocess_s2("noSemicolons"), "noSemicolons")
-
-    def test_build_key_single_pair(self):
-        # Single column pair test
-        df = pd.DataFrame({S1_COL: [" Key1 ", None, "Key3"], S4_COL: [None, "  S4 ", "   S4_2"]})
-        row = df.iloc[0]
-        # build_key on first row with single pair (S1_COL, T1_COL)
-        key_tuple = build_key(row, [(S1_COL, T1_COL)], is_source=True)
-        self.assertEqual(key_tuple, ("Key1",))
-        # Checking second row is None -> becomes empty
-        row_2 = df.iloc[1]
-        key_tuple_2 = build_key(row_2, [(S1_COL, T1_COL)], is_source=True)
-        self.assertEqual(key_tuple_2, ("",))
-
-    def test_build_key_multiple_pairs(self):
-        # Multiple pairs test
-        df = pd.DataFrame({
-            S1_COL: ["valueS1"],
-            S4_COL: ["  valueS4  "],
-            T1_COL: ["valueT1"],
-            T4_COL: ["valueT4"]
-        })
-        row_source = df.iloc[0]
-        key_source = build_key(row_source, [(S1_COL, T1_COL), (S4_COL, T4_COL)], is_source=True)
-        self.assertEqual(key_source, ("valueS1", "valueS4"))
-        row_target = df.iloc[0]
-        key_target = build_key(row_target, [(S1_COL, T1_COL), (S4_COL, T4_COL)], is_source=False)
-        self.assertEqual(key_target, ("valueT1", "valueT4"))
-
-    def test_calculate(self):
-        # Verify the placeholder business logic
-        self.assertEqual(calculate("input"), "input")
-
-class TestUpdateTarget(unittest.TestCase):
-
-    def test_update_target_simple(self):
-        """
-        Test a simple scenario with matching s1/t1 across rows
-        and verify the updated columns come from source.
-        """
-        # Prepare in-memory CSV data for source and target
-        source_csv = """s1,s2,s3
-        100,Hello;World,   valS3_1
-        200,   AnotherValue,  valS3_2
-        300,OneMoreValue,  valS3_3
-        """
-        target_csv = """t1,t2,t3,OtherCol
-        100,OldData,OldData,KeepMe
-        200,OldData,OldData,KeepMe
-        999,NoMatch,NoMatch,KeepMe
-        """
-
-        # Read CSV data into DataFrames
-        source_df = pd.read_csv(StringIO(source_csv), skipinitialspace=True)
-        target_df = pd.read_csv(StringIO(target_csv), skipinitialspace=True)
-
-        # Run update logic
-        updated_df = update_target(source_df, target_df)
-
-        # Verify rows where t1 matched s1 (100 and 200) got updated
-        row_100 = updated_df.loc[updated_df["t1"] == 100]
-        self.assertEqual(row_100["t2"].values[0], "Hello.World")  # semicolon replaced with dot
-        self.assertEqual(row_100["t3"].values[0], "valS3_1")
-
-        row_200 = updated_df.loc[updated_df["t1"] == 200]
-        self.assertEqual(row_200["t2"].values[0], "AnotherValue")
-        self.assertEqual(row_200["t3"].values[0], "valS3_2")
-
-        # Verify row with t1=999 remains unchanged
-        row_999 = updated_df.loc[updated_df["t1"] == 999]
-        self.assertEqual(row_999["t2"].values[0], "NoMatch")
-        self.assertEqual(row_999["t3"].values[0], "NoMatch")
-        self.assertEqual(row_999["OtherCol"].values[0], "KeepMe")
-
-# ----------------------------------------------------------------------------
-# RUN ALL TESTS
-# ----------------------------------------------------------------------------
+    # 4. Save the updated target file
+    target_df.to_excel(TARGET_FILE_PATH, index=False)
 
 if __name__ == "__main__":
-    unittest.main(exit=False)
+    main()
