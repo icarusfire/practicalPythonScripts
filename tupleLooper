@@ -7,24 +7,26 @@ def restore_values_with_actual_tps(conf_file_path, tps_mapping):
     """
     file_name = Path(conf_file_path).name
     updated_lines = []
-    
+    current_test_case = None  # Track the active test case
+
     with open(conf_file_path, "r", encoding="utf-8") as f:
         for line in f:
-            match = re.search(r'(\s*tps\s*=\s*)"(\${tps})"', line)  # Match tps = "${tps}"
-            if match:
-                indent = match.group(1)  # Preserve indentation
-                test_case_match = re.search(r'(\w+)\s*=\s*\{', line)  # Extract test case name
+            # Detect test case name (assumes it is a key with an opening curly brace)
+            test_case_match = re.match(r'^\s*([\w\d_]+)\s*=\s*\{', line)
+            if test_case_match:
+                current_test_case = test_case_match.group(1)  # Store the current test case name
 
-                if test_case_match:
-                    test_case = test_case_match.group(1)
-                    key = (file_name, test_case)
-
+            # Match "tps = ${tps}" and replace if a valid test case is found
+            if current_test_case:
+                tps_match = re.match(r'(\s*tps\s*=\s*)"\${tps}"', line)
+                if tps_match:
+                    key = (file_name, current_test_case)
                     if key in tps_mapping:
                         real_tps = tps_mapping[key]
-                        line = f'{indent}{real_tps}\n'  # Replace only the TPS value
+                        line = f'{tps_match.group(1)}"{real_tps}"\n'  # Preserve indentation and replace value
 
             updated_lines.append(line)
-    
+
     # Overwrite only if changes were made
     with open(conf_file_path, "w", encoding="utf-8") as f:
         f.writelines(updated_lines)
