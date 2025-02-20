@@ -1,146 +1,101 @@
-import pandas as pd
+import os
+import re
+from pathlib import Path
+from pyhocon import ConfigFactory
+from openpyxl import Workbook, load_workbook
 
-# ----------------------------------------------------------------------------
-# 1. File paths
-SOURCE_FILE_PATH = "dir1/source-sheet.xlsx"
-TARGET_FILE_PATH = "dir2/target-sheet.xlsx"
+fields_to_be_replaced_with_placeholder = ['tps']
 
-# 2. Matching column pairs for identifying rows
-S1_COL = "s1"
-T1_COL = "t1"
-S4_COL = "s4"
-T4_COL = "t4"
-
-MATCHING_COLUMN_PAIRS = [
-    (S1_COL, T1_COL),
-    # (S4_COL, T4_COL),  # Uncomment or add more pairs as needed
-]
-
-# 3. Columns to update in target, mapped from source
-S2_COL = "s2"
-S3_COL = "s3"
-T2_COL = "t2"
-T3_COL = "t3"
-
-COLUMN_MAP = {
-    S2_COL: T2_COL,
-    S3_COL: T3_COL
-}
-# ----------------------------------------------------------------------------
-
-def preprocess_s1(value):
+def load_tps_mapping(excel_input):
     """
-    Example: Remove leading/trailing whitespace, ensure empty or null becomes ''.
-    Extend or modify as needed.
+    Loads the TPS mapping from the Excel file.
+    Expected Excel columns:
+      API Name, File Name, Scenario, Method, QAB-URL, Default TPS, Prod TPS, Prod Weight, Delta TPS, Delta Weight
+    Returns a dictionary mapping (File Name, Scenario) --> Default TPS.
     """
-    if pd.isnull(value):
-        return ""
-    return str(value).strip()
+    mapping = {}
+    wb = load_workbook(excel_input)
+    sheet = wb.active
+    # Skip header row (assumes data starts at row 2)
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        file_name = row[1]
+        scenario = row[2]
+        default_tps = row[5]
+        if file_name and scenario:
+            mapping[(str(file_name), str(scenario))] = default_tps
+    return mapping
 
-def preprocess_s4(value):
+def restore_values_with_actual_tps(conf_file_path, scenarios, tps_mapping):
     """
-    Another example. Modify as needed (e.g., remove semicolons, etc.).
+    Reads the conf file and for each scenario (from the definitions dict) replaces the TPS placeholder,
+    e.g. converting:
+         tps: "${tps}"
+    into:
+         tps: 195
+    using the Default TPS value from the Excel mapping.
+    
+    This function reuses the same regex approach as your original replace_values_with_placeholders.
     """
-    if pd.isnull(value):
-        return ""
-    return str(value).strip()
+    with open(conf_file_path, 'r') as f:
+        lines = f.readlines()
 
-def preprocess_s2(value):
-    """
-    Example: remove semicolons, replace them with dots, trim, handle nulls, etc.
-    """
-    if pd.isnull(value):
-        return ""
-    value_str = str(value).strip().replace(";", ".")
-    return value_str
+    modified_lines = []
+    for line in lines:
+        replaced_line = line
+        for scenario, config_items in scenarios.items():
+            for item in config_items:
+                if item in fields_to_be_replaced_with_placeholder and (f"{item} =" in line or f"{item}:" in line):
+                    # Check for the placeholder with double quotes
+                    if '"${tps}"' in line or '"{$tps}"' in line:
+                        file_name = Path(conf_file_path).name
+                        if (file_name, scenario) in tps_mapping:
+                            actual_value = tps_mapping[(file_name, scenario)]
+                            replaced_line = re.sub(
+                                r"(\s*" + item + r"\s*[:=]\s*).*",
+                                r"\1{}".format(actual_value),
+                                line
+                            )
+                            break
+        modified_lines.append(replaced_line)
 
-def preprocess_s3(value):
-    """
-    Adjust or add any transformations required for s3.
-    """
-    if pd.isnull(value):
-        return ""
-    return str(value).strip()
+    with open(conf_file_path, 'w') as f:
+        f.writelines(modified_lines)
 
-# ----------------------------------------------------------------------------
-# Dictionary mapping column names to their preprocess functions.
-# By default, if a column doesn't appear here, it receives a generic preprocessor.
-# ----------------------------------------------------------------------------
-PREPROCESS_FUNCTIONS = {
-    S1_COL: preprocess_s1,
-    S2_COL: preprocess_s2,
-    S3_COL: preprocess_s3,
-    S4_COL: preprocess_s4
-}
+def process_definitions(scenarios, conf_file, sheet):
+    for scenario_name, scenario_definition in scenarios.items():
+        sheet.append([
+            conf_file.parent.name,
+            conf_file.name,
+            scenario_name,
+            scenario_definition.get("method", ""),
+            scenario_definition.get("qab-url", ""),
+            scenario_definition.get("tps", 0),
+            scenario_definition.get("weight", 0),
+        ])
 
-def default_preprocess(value):
-    """
-    Fallback if no specific function is found in PREPROCESS_FUNCTIONS.
-    Converts nulls to empty string, then strips whitespace.
-    """
-    if pd.isnull(value):
-        return ""
-    return str(value).strip()
+# Creates an Excel sheet and updates conf files with the actual TPS values from the Excel.
+def find_conf_files_pathlib(my_filepath, excel_output="output.xlsx", restore_placeholder=False, excel_input="scenario_tps_config.xlsx"):
+    workbook = Workbook()
+    sheet = workbook.active
 
-def get_preprocess_function(col_name):
-    """
-    Retrieve the specific preprocess function, or a default if not found.
-    """
-    return PREPROCESS_FUNCTIONS.get(col_name, default_preprocess)
+    sheet.append(["API Name", "File Name", "Scenario", "Method", "QAB-URL", "Default TPS", "Prod TPS", "Prod Weight", "Delta TPS", "Delta Weight"])
 
-def build_key(row, col_pairs, is_source=True):
-    """
-    Constructs a tuple key from multiple column pairs:
-      - For source: read from s_col in each pair
-      - For target: read from t_col in each pair
-    Each value is preprocessed before being included in the key.
-    """
-    key_elems = []
-    for s_col, t_col in col_pairs:
-        col_to_read = s_col if is_source else t_col
-        raw_value = row[col_to_read]
-        preprocessed_value = get_preprocess_function(col_to_read)(raw_value)
-        key_elems.append(preprocessed_value)
-    return tuple(key_elems)
+    # Load the TPS mapping from the Excel file.
+    tps_mapping = load_tps_mapping(excel_input)
 
-def calculate(value):
-    """
-    Placeholder for your business logic. Currently returns value as is.
-    """
-    return value
+    p = Path(my_filepath)
+    for conf_file in p.rglob("*.conf"):
+        scenarios = conf_file.name
+        conf = ConfigFactory.parse_file(str(conf_file))
+        # Note: use the updated block name 'test_definitions'
+        definitions = conf.get("test_definitions", {})
+        process_definitions(definitions, conf_file, sheet)
 
-def main():
-    # 1. Read source and target Excel sheets
-    source_df = pd.read_excel(SOURCE_FILE_PATH)
-    target_df = pd.read_excel(TARGET_FILE_PATH)
+        if restore_placeholder:
+            restore_values_with_actual_tps(str(conf_file), definitions, tps_mapping)
 
-    # 2. Build a mapping from source data
-    #    Key: tuple built from the matching column(s), Value: dict of columns to update
-    source_map = {}
-    for _, row in source_df.iterrows():
-        key_tuple = build_key(row, MATCHING_COLUMN_PAIRS, is_source=True)
-
-        # Collect only the columns needed for updates, applying preprocessing
-        data_to_update = {}
-        for s_col in COLUMN_MAP.keys():
-            raw_value = row[s_col]
-            preprocessed_value = get_preprocess_function(s_col)(raw_value)
-            data_to_update[s_col] = preprocessed_value
-
-        source_map[key_tuple] = data_to_update
-
-    # 3. Iterate target rows, match via tuple key, and update
-    for idx, row in target_df.iterrows():
-        target_key_tuple = build_key(row, MATCHING_COLUMN_PAIRS, is_source=False)
-
-        if target_key_tuple in source_map:
-            source_values = source_map[target_key_tuple]
-            for s_col, t_col in COLUMN_MAP.items():
-                new_value = calculate(source_values[s_col])
-                target_df.at[idx, t_col] = new_value
-
-    # 4. Save the updated target file
-    target_df.to_excel(TARGET_FILE_PATH, index=False)
+    workbook.save(excel_output)
 
 if __name__ == "__main__":
-    main()
+    directory_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "api-gating-tests-java/src/main/resources/api"))
+    find_conf_files_pathlib(directory_path, excel_output="scenario_tps_config.xlsx", restore_placeholder=True)
