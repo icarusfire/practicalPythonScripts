@@ -1,56 +1,21 @@
-    with open(conf_file_path, 'r') as f:
-        lines = f.readlines()
+def restore_values_with_actual_tps(conf_file_path, definitions, tps_mapping):
+    """
+    Updates the TPS placeholders in the given conf file with actual values from tps_mapping.
+    
+    :param conf_file_path: Path to the conf file
+    :param definitions: Parsed test definitions from the conf file
+    :param tps_mapping: Dictionary containing actual TPS values mapped by (file_name, test_case)
+    """
+    conf_modified = False  # Track if modifications were made
 
-    modified_lines = []
-    current_scenario = None
-    in_test_definitions = False
-    brace_stack = []  # To track the nested block levels
+    for test_case_name, test_config in definitions.items():
+        if "tps" in test_config and test_config["tps"] == "${tps}":
+            key = (Path(conf_file_path).name, test_case_name)  # Match file name and test case
+            if key in tps_mapping:
+                test_config["tps"] = tps_mapping[key]
+                conf_modified = True  # Mark modification
 
-    for line in lines:
-        # Detect the start of the test_definitions block
-        if re.search(r"\btest_definitions\s*\{", line):
-            in_test_definitions = True
-            brace_stack.append("test_definitions")
-            modified_lines.append(line)
-            continue
-
-        if in_test_definitions:
-            # Detect a new scenario block; assume scenario names are simple words
-            scenario_match = re.match(r"^\s*(\w+)\s*\{", line)
-            if scenario_match and len(brace_stack) == 1:
-                current_scenario = scenario_match.group(1)
-                brace_stack.append(current_scenario)
-                modified_lines.append(line)
-                continue
-
-            # Detect closing braces to correctly exit scenario or test_definitions blocks
-            if re.match(r"^\s*\}\s*$", line):
-                if brace_stack:
-                    popped = brace_stack.pop()
-                    if popped != "test_definitions":
-                        current_scenario = None
-                    else:
-                        in_test_definitions = False
-                modified_lines.append(line)
-                continue
-
-            # When inside a scenario block, check for a tps line
-            if current_scenario and re.search(r"\btps\s*[:=]\s*", line):
-                # Look for the placeholder with double quotes: "${tps}" or "{$tps}"
-                if re.search(r'("\$\{tps\}")|("\{\$tps\}")', line):
-                    file_name = Path(conf_file_path).name
-                    key = (file_name, current_scenario)
-                    if key in tps_mapping:
-                        new_tps_value = tps_mapping[key]
-                        # Replace the entire value part (after the operator) with the new TPS value.
-                        # This mimics the approach in the original code.
-                        line = re.sub(
-                            r"^(\s*tps\s*[:=]\s*).*$",
-                            r"\1{}".format(new_tps_value),
-                            line
-                        )
-                modified_lines.append(line)
-                continue
-
-        # For lines outside of test_definitions, leave them unchanged.
-        modified_lines.append(line)
+    if conf_modified:
+        # Save back the modified configuration
+        with open(conf_file_path, "w") as f:
+            f.write(str(definitions))
