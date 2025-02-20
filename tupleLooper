@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 def restore_values_with_actual_tps(conf_file_path, tps_mapping):
     """
     Updates the TPS placeholders in the given conf file with actual values from tps_mapping.
@@ -7,26 +10,36 @@ def restore_values_with_actual_tps(conf_file_path, tps_mapping):
     """
     file_name = Path(conf_file_path).name
     updated_lines = []
-    current_test_case = None  # Track the active test case
+    current_test_case = None  # Will hold the active test case name
+
+    # Regex for a test-case line that looks like:
+    # 'some_test_case' = (ConfigTree: 5) ConfigTree({ ...
+    # Adjust if your file lines differ in format.
+    test_case_line_pattern = re.compile(r"^\s*'([^']+)'\s*=\s*\(ConfigTree:")
+    
+    # Regex for matching a line containing tps = "${tps}"
+    # capturing any indentation in group(1).
+    tps_line_pattern = re.compile(r'^(\s*)tps\s*=\s*"\${tps}"')
 
     with open(conf_file_path, "r", encoding="utf-8") as f:
         for line in f:
-            # Detect test case name (assumes it is a key with an opening curly brace)
-            test_case_match = re.match(r'^\s*([\w\d_]+)\s*=\s*\{', line)
-            if test_case_match:
-                current_test_case = test_case_match.group(1)  # Store the current test case name
+            # Check if this line declares a new test case
+            m_test_case = test_case_line_pattern.match(line)
+            if m_test_case:
+                current_test_case = m_test_case.group(1)
 
-            # Match "tps = ${tps}" and replace if a valid test case is found
-            if current_test_case:
-                tps_match = re.match(r'(\s*tps\s*=\s*)"\${tps}"', line)
-                if tps_match:
-                    key = (file_name, current_test_case)
-                    if key in tps_mapping:
-                        real_tps = tps_mapping[key]
-                        line = f'{tps_match.group(1)}"{real_tps}"\n'  # Preserve indentation and replace value
+            # If we're in a test case, see if there's a tps placeholder to replace
+            m_tps = tps_line_pattern.match(line)
+            if current_test_case and m_tps:
+                indent = m_tps.group(1)  # Preserve indentation
+                key = (file_name, current_test_case)
+                if key in tps_mapping:
+                    real_tps = tps_mapping[key]
+                    # Replace only the placeholder with the numeric TPS value
+                    line = f'{indent}tps = "{real_tps}"\n'
 
             updated_lines.append(line)
 
-    # Overwrite only if changes were made
+    # Write the updated lines back, preserving all other content
     with open(conf_file_path, "w", encoding="utf-8") as f:
         f.writelines(updated_lines)
