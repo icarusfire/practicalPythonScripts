@@ -1,21 +1,30 @@
-def restore_values_with_actual_tps(conf_file_path, definitions, tps_mapping):
+def restore_values_with_actual_tps(conf_file_path, tps_mapping):
     """
     Updates the TPS placeholders in the given conf file with actual values from tps_mapping.
     
-    :param conf_file_path: Path to the conf file
-    :param definitions: Parsed test definitions from the conf file
+    :param conf_file_path: Path to the .conf file
     :param tps_mapping: Dictionary containing actual TPS values mapped by (file_name, test_case)
     """
-    conf_modified = False  # Track if modifications were made
+    file_name = Path(conf_file_path).name
+    updated_lines = []
+    
+    with open(conf_file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            match = re.search(r'(\s*tps\s*=\s*)"(\${tps})"', line)  # Match tps = "${tps}"
+            if match:
+                indent = match.group(1)  # Preserve indentation
+                test_case_match = re.search(r'(\w+)\s*=\s*\{', line)  # Extract test case name
 
-    for test_case_name, test_config in definitions.items():
-        if "tps" in test_config and test_config["tps"] == "${tps}":
-            key = (Path(conf_file_path).name, test_case_name)  # Match file name and test case
-            if key in tps_mapping:
-                test_config["tps"] = tps_mapping[key]
-                conf_modified = True  # Mark modification
+                if test_case_match:
+                    test_case = test_case_match.group(1)
+                    key = (file_name, test_case)
 
-    if conf_modified:
-        # Save back the modified configuration
-        with open(conf_file_path, "w") as f:
-            f.write(str(definitions))
+                    if key in tps_mapping:
+                        real_tps = tps_mapping[key]
+                        line = f'{indent}{real_tps}\n'  # Replace only the TPS value
+
+            updated_lines.append(line)
+    
+    # Overwrite only if changes were made
+    with open(conf_file_path, "w", encoding="utf-8") as f:
+        f.writelines(updated_lines)
