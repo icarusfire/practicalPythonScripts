@@ -1,101 +1,39 @@
-import os
-import re
-from pathlib import Path
-from pyhocon import ConfigFactory
-from openpyxl import Workbook, load_workbook
-
-fields_to_be_replaced_with_placeholder = ['tps']
-
-def load_tps_mapping(excel_input):
-    """
-    Loads the TPS mapping from the Excel file.
-    Expected Excel columns:
-      API Name, File Name, Scenario, Method, QAB-URL, Default TPS, Prod TPS, Prod Weight, Delta TPS, Delta Weight
-    Returns a dictionary mapping (File Name, Scenario) --> Default TPS.
-    """
-    mapping = {}
-    wb = load_workbook(excel_input)
-    sheet = wb.active
-    # Skip header row (assumes data starts at row 2)
-    for row in sheet.iter_rows(min_row=2, values_only=True):
-        file_name = row[1]
-        scenario = row[2]
-        default_tps = row[5]
-        if file_name and scenario:
-            mapping[(str(file_name), str(scenario))] = default_tps
-    return mapping
-
 def restore_values_with_actual_tps(conf_file_path, scenarios, tps_mapping):
     """
-    Reads the conf file and for each scenario (from the definitions dict) replaces the TPS placeholder,
-    e.g. converting:
-         tps: "${tps}"
-    into:
-         tps: 195
-    using the Default TPS value from the Excel mapping.
+    Reuses your original placeholder replacement logic—but now for restoration.
+    Instead of blindly iterating over all scenarios for every line, this version tracks the current
+    scenario (using a regex on lines that start with a word followed by '{').
     
-    This function reuses the same regex approach as your original replace_values_with_placeholders.
+    For lines like:
+      tps: "${tps}"   or   tps: "{$tps}"
+    it replaces the placeholder with the actual TPS value (from the Excel mapping)
+    for the current scenario.
     """
     with open(conf_file_path, 'r') as f:
         lines = f.readlines()
 
     modified_lines = []
+    current_scenario = None
     for line in lines:
+        # Check if this line starts a scenario block, e.g. "scenarioName {"
+        scenario_match = re.match(r"^\s*(\w+)\s*\{", line)
+        if scenario_match:
+            current_scenario = scenario_match.group(1)
         replaced_line = line
-        for scenario, config_items in scenarios.items():
-            for item in config_items:
-                if item in fields_to_be_replaced_with_placeholder and (f"{item} =" in line or f"{item}:" in line):
-                    # Check for the placeholder with double quotes
-                    if '"${tps}"' in line or '"{$tps}"' in line:
-                        file_name = Path(conf_file_path).name
-                        if (file_name, scenario) in tps_mapping:
-                            actual_value = tps_mapping[(file_name, scenario)]
-                            replaced_line = re.sub(
-                                r"(\s*" + item + r"\s*[:=]\s*).*",
-                                r"\1{}".format(actual_value),
-                                line
-                            )
-                            break
+        # Only try to replace if we're in a scenario block and the line contains a TPS field with a placeholder.
+        if current_scenario is not None:
+            for item in fields_to_be_replaced_with_placeholder:
+                if (f"{item}:" in line or f"{item} =" in line) and ('"${tps}"' in line or '"{$tps}"' in line):
+                    file_name = Path(conf_file_path).name
+                    key = (file_name, current_scenario)
+                    if key in tps_mapping:
+                        actual_value = tps_mapping[key]
+                        # Replace the entire value portion (after the operator) with the actual TPS.
+                        replaced_line = re.sub(
+                            r"(\s*" + item + r"\s*[:=]\s*).*",
+                            r"\1{}".format(actual_value),
+                            line
+                        )
+                    # Once replaced for this field, break out of the inner loop.
+                    break
         modified_lines.append(replaced_line)
-
-    with open(conf_file_path, 'w') as f:
-        f.writelines(modified_lines)
-
-def process_definitions(scenarios, conf_file, sheet):
-    for scenario_name, scenario_definition in scenarios.items():
-        sheet.append([
-            conf_file.parent.name,
-            conf_file.name,
-            scenario_name,
-            scenario_definition.get("method", ""),
-            scenario_definition.get("qab-url", ""),
-            scenario_definition.get("tps", 0),
-            scenario_definition.get("weight", 0),
-        ])
-
-# Creates an Excel sheet and updates conf files with the actual TPS values from the Excel.
-def find_conf_files_pathlib(my_filepath, excel_output="output.xlsx", restore_placeholder=False, excel_input="scenario_tps_config.xlsx"):
-    workbook = Workbook()
-    sheet = workbook.active
-
-    sheet.append(["API Name", "File Name", "Scenario", "Method", "QAB-URL", "Default TPS", "Prod TPS", "Prod Weight", "Delta TPS", "Delta Weight"])
-
-    # Load the TPS mapping from the Excel file.
-    tps_mapping = load_tps_mapping(excel_input)
-
-    p = Path(my_filepath)
-    for conf_file in p.rglob("*.conf"):
-        scenarios = conf_file.name
-        conf = ConfigFactory.parse_file(str(conf_file))
-        # Note: use the updated block name 'test_definitions'
-        definitions = conf.get("test_definitions", {})
-        process_definitions(definitions, conf_file, sheet)
-
-        if restore_placeholder:
-            restore_values_with_actual_tps(str(conf_file), definitions, tps_mapping)
-
-    workbook.save(excel_output)
-
-if __name__ == "__main__":
-    directory_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "api-gating-tests-java/src/main/resources/api"))
-    find_conf_files_pathlib(directory_path, excel_output="scenario_tps_config.xlsx", restore_placeholder=True)
