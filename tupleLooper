@@ -1,39 +1,56 @@
-def restore_values_with_actual_tps(conf_file_path, scenarios, tps_mapping):
-    """
-    Reuses your original placeholder replacement logic—but now for restoration.
-    Instead of blindly iterating over all scenarios for every line, this version tracks the current
-    scenario (using a regex on lines that start with a word followed by '{').
-    
-    For lines like:
-      tps: "${tps}"   or   tps: "{$tps}"
-    it replaces the placeholder with the actual TPS value (from the Excel mapping)
-    for the current scenario.
-    """
     with open(conf_file_path, 'r') as f:
         lines = f.readlines()
 
     modified_lines = []
     current_scenario = None
+    in_test_definitions = False
+    brace_stack = []  # To track the nested block levels
+
     for line in lines:
-        # Check if this line starts a scenario block, e.g. "scenarioName {"
-        scenario_match = re.match(r"^\s*(\w+)\s*\{", line)
-        if scenario_match:
-            current_scenario = scenario_match.group(1)
-        replaced_line = line
-        # Only try to replace if we're in a scenario block and the line contains a TPS field with a placeholder.
-        if current_scenario is not None:
-            for item in fields_to_be_replaced_with_placeholder:
-                if (f"{item}:" in line or f"{item} =" in line) and ('"${tps}"' in line or '"{$tps}"' in line):
+        # Detect the start of the test_definitions block
+        if re.search(r"\btest_definitions\s*\{", line):
+            in_test_definitions = True
+            brace_stack.append("test_definitions")
+            modified_lines.append(line)
+            continue
+
+        if in_test_definitions:
+            # Detect a new scenario block; assume scenario names are simple words
+            scenario_match = re.match(r"^\s*(\w+)\s*\{", line)
+            if scenario_match and len(brace_stack) == 1:
+                current_scenario = scenario_match.group(1)
+                brace_stack.append(current_scenario)
+                modified_lines.append(line)
+                continue
+
+            # Detect closing braces to correctly exit scenario or test_definitions blocks
+            if re.match(r"^\s*\}\s*$", line):
+                if brace_stack:
+                    popped = brace_stack.pop()
+                    if popped != "test_definitions":
+                        current_scenario = None
+                    else:
+                        in_test_definitions = False
+                modified_lines.append(line)
+                continue
+
+            # When inside a scenario block, check for a tps line
+            if current_scenario and re.search(r"\btps\s*[:=]\s*", line):
+                # Look for the placeholder with double quotes: "${tps}" or "{$tps}"
+                if re.search(r'("\$\{tps\}")|("\{\$tps\}")', line):
                     file_name = Path(conf_file_path).name
                     key = (file_name, current_scenario)
                     if key in tps_mapping:
-                        actual_value = tps_mapping[key]
-                        # Replace the entire value portion (after the operator) with the actual TPS.
-                        replaced_line = re.sub(
-                            r"(\s*" + item + r"\s*[:=]\s*).*",
-                            r"\1{}".format(actual_value),
+                        new_tps_value = tps_mapping[key]
+                        # Replace the entire value part (after the operator) with the new TPS value.
+                        # This mimics the approach in the original code.
+                        line = re.sub(
+                            r"^(\s*tps\s*[:=]\s*).*$",
+                            r"\1{}".format(new_tps_value),
                             line
                         )
-                    # Once replaced for this field, break out of the inner loop.
-                    break
-        modified_lines.append(replaced_line)
+                modified_lines.append(line)
+                continue
+
+        # For lines outside of test_definitions, leave them unchanged.
+        modified_lines.append(line)
