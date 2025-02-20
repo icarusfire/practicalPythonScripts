@@ -3,43 +3,53 @@ from pathlib import Path
 
 def restore_values_with_actual_tps(conf_file_path, tps_mapping):
     """
-    Updates the TPS placeholders in the given conf file with actual values from tps_mapping.
+    Updates the TPS placeholders in the given .conf file with actual values from tps_mapping,
+    preserving the original file formatting and structure.
     
     :param conf_file_path: Path to the .conf file
     :param tps_mapping: Dictionary containing actual TPS values mapped by (file_name, test_case)
     """
     file_name = Path(conf_file_path).name
     updated_lines = []
-    current_test_case = None  # Will hold the active test case name
+    current_test_case = None  # Track which block/test-case we're in
 
-    # Regex for a test-case line that looks like:
-    # 'some_test_case' = (ConfigTree: 5) ConfigTree({ ...
-    # Adjust if your file lines differ in format.
-    test_case_line_pattern = re.compile(r"^\s*'([^']+)'\s*=\s*\(ConfigTree:")
-    
-    # Regex for matching a line containing tps = "${tps}"
-    # capturing any indentation in group(1).
-    tps_line_pattern = re.compile(r'^(\s*)tps\s*=\s*"\${tps}"')
+    # Matches lines like:
+    # productagreement_v4_create_product_agreement {
+    test_case_line_pattern = re.compile(r'^(\s*)([A-Za-z0-9_]+)\s*\{$')
+
+    # Matches lines like:
+    #     tps = "${tps}"
+    tps_line_pattern = re.compile(r'^(\s*)tps\s*=\s*"\${tps}"\s*$')
+
+    # Matches lines like:
+    # }
+    # so we know when a block ends
+    closing_brace_pattern = re.compile(r'^(\s*)}\s*$')
 
     with open(conf_file_path, "r", encoding="utf-8") as f:
         for line in f:
-            # Check if this line declares a new test case
-            m_test_case = test_case_line_pattern.match(line)
-            if m_test_case:
-                current_test_case = m_test_case.group(1)
+            # 1) Check if this line declares a new test-case block
+            m_tc = test_case_line_pattern.match(line)
+            if m_tc:
+                current_test_case = m_tc.group(2)
 
-            # If we're in a test case, see if there's a tps placeholder to replace
-            m_tps = tps_line_pattern.match(line)
-            if current_test_case and m_tps:
-                indent = m_tps.group(1)  # Preserve indentation
-                key = (file_name, current_test_case)
-                if key in tps_mapping:
-                    real_tps = tps_mapping[key]
-                    # Replace only the placeholder with the numeric TPS value
-                    line = f'{indent}tps = "{real_tps}"\n'
+            # 2) If we're inside a test case, look for a TPS placeholder
+            if current_test_case:
+                m_tps = tps_line_pattern.match(line)
+                if m_tps:
+                    indent = m_tps.group(1)
+                    key = (file_name, current_test_case)
+                    if key in tps_mapping:
+                        real_tps = tps_mapping[key]
+                        # Replace only the placeholder, preserve indentation
+                        line = f'{indent}tps = "{real_tps}"\n'
+
+                # 3) If we see a closing brace, end the current test case block
+                if closing_brace_pattern.match(line):
+                    current_test_case = None
 
             updated_lines.append(line)
 
-    # Write the updated lines back, preserving all other content
+    # Write updated lines back to the file
     with open(conf_file_path, "w", encoding="utf-8") as f:
         f.writelines(updated_lines)
