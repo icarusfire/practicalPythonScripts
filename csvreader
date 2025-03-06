@@ -84,7 +84,7 @@ def update_scenario_block(lines, tps_mapping):
     for line in lines:
         match = dtab_url_line_pattern.match(line)
         if match:
-            dtab_url = match.group(1).strip()
+            dtab_url = match.group(1).strip().strip('"\'')
             break
 
     # Second pass: if we found a matching dtab-url, update all tps lines
