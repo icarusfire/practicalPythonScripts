@@ -1,376 +1,89 @@
-from bokeh.plotting import figure, show
-from bokeh.models import ColumnDataSource, HoverTool, TapTool, CustomJS, LabelSet, TextInput, Div, Legend, LegendItem
-from bokeh.io import output_file
-from bokeh.layouts import column
-import networkx as nx
-import os
-import numpy as np
+import re
+from pathlib import Path
+from openpyxl import Workbook, load_workbook
 
+fields_to_be_replaced_with_placeholder = ["tps"]
 
-def draw_graph_bokeh(G, file_metadata, output_html="yaml_dependencies.html"):
-    # Compute levels (assuming G is a DAG)
-    levels = {}
-    for node in nx.topological_sort(G):
-        if G.in_degree(node) == 0:
-            levels[node] = 0
-        else:
-            levels[node] = max(levels[p] for p in G.predecessors(node)) + 1
+def load_tps_mapping(excel_input):
+    """
+    Loads a mapping from the metrics_data.xlsx file.
+    Uses the 'Dtab-URL' column as key and '%40 added' as the tps value.
+    """
+    mapping = {}
+    workbook = load_workbook(excel_input)
+    sheet = workbook.active
 
-    # Group nodes by level
-    level_nodes = {}
-    for node, level in levels.items():
-        level_nodes.setdefault(level, []).append(node)
+    # Read header row to dynamically find column indices
+    header = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+    try:
+        dtab_url_index = header.index("Dtab-URL")
+        tps_value_index = header.index("%40 added")
+    except ValueError as e:
+        raise ValueError("Required column not found in Excel file: " + str(e))
 
-    x_spacing = 300
-    pos = {}
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        dtab_url = row[dtab_url_index]
+        tps_value = row[tps_value_index]
+        if dtab_url is not None:
+            mapping[str(dtab_url).strip()] = str(tps_value).strip() if tps_value is not None else ""
+    return mapping
 
-    def has_valid(entries):
-        """Check if triggers/schedules contain any non-empty & non-'none' entry."""
-        for item in entries or []:
-            s = str(item).strip().lower()
-            if not s or s == "none":
-                continue
-            if s.startswith("cron:"):
-                remainder = s.split(":", 1)[1].strip()
-                if not remainder or remainder == "none":
-                    continue
-            return True
-        return False
+def restore_values_with_actual_tps(conf_file_path, tps_mapping):
+    """
+    Updates the tps values in a conf file by using the dtab-url from each scenario block.
+    If multiple scenarios share the same dtab-url, each one will be updated with the corresponding tps value.
+    """
+    updated_lines = []
+    current_dtab_url = None
 
-    # Sort left-hand-side nodes so that green > red > orange > goldenrod
-    for level, nodes_in_level in level_nodes.items():
-        if level == 0:
-            def group_key(n):
-                tlist = file_metadata[n].get("triggers", [])
-                slist = file_metadata[n].get("schedules", [])
-                vt, vs = has_valid(tlist), has_valid(slist)
-                # 0=green,1=red,2=orange,3=gold
-                if vt and vs:
-                    return 0
-                elif vt:
-                    return 1
-                elif vs:
-                    return 2
-                else:
-                    return 3
-            nodes_in_level.sort(key=group_key)
-        else:
-            nodes_in_level.sort()
+    # Pattern to detect a line with dtab-url, e.g., "dtab-url = some_value"
+    dtab_url_line_pattern = re.compile(r'^\s*dtab-url\s*=\s*(.+?)\s*$')
+    # Pattern to detect a tps line, e.g., "tps = 23"
+    tps_line_pattern = re.compile(r'^(\s*)tps\s*=\s*(\d+)\s*$')
+    # Pattern to detect the closing brace, indicating the end of a block
+    closing_brace_pattern = re.compile(r'^(\s*)}\s*$')
 
-        n_nodes = len(nodes_in_level)
-        y_positions = [0] if n_nodes == 1 else np.linspace(200, -200, n_nodes)
-        for i, node in enumerate(nodes_in_level):
-            pos[node] = (level * x_spacing, y_positions[i])
+    with open(conf_file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            # Look for the dtab-url line to capture the key for this block
+            dtab_match = dtab_url_line_pattern.match(line)
+            if dtab_match:
+                current_dtab_url = dtab_match.group(1).strip()
 
-    # Shift everything
-    shift_x = 110
-    shift_y = 0
-    for node, (x_val, y_val) in pos.items():
-        pos[node] = (x_val + shift_x, y_val + shift_y)
+            # Update tps line if we're inside a block with a captured dtab-url
+            tps_match = tps_line_pattern.match(line)
+            if tps_match and current_dtab_url:
+                indent = tps_match.group(1)
+                if current_dtab_url in tps_mapping:
+                    real_tps = tps_mapping[current_dtab_url]
+                    line = f"{indent}tps={real_tps}\n"
 
-    # Prepare node data
-    nodes_order = list(pos.keys())
-    x_coords = [pos[n][0] for n in nodes_order]
-    y_coords = [pos[n][1] for n in nodes_order]
-    yaml_files = [os.path.basename(n) for n in nodes_order]
+            # Reset current_dtab_url at the end of a block
+            if closing_brace_pattern.match(line):
+                current_dtab_url = None
 
-    triggers_strs = []
-    schedules_strs = []
-    for n in nodes_order:
-        md = file_metadata[n]
-        triggers_strs.append("\n".join(md.get("triggers", [])) if md.get("triggers") else "None")
-        schedules_strs.append("\n".join(md.get("schedules", [])) if md.get("schedules") else "None")
+            updated_lines.append(line)
 
-    # Node colors
-    node_colors = []
-    for n in nodes_order:
-        if G.in_degree(n) == 0:
-            trig = file_metadata[n].get("triggers", [])
-            sch  = file_metadata[n].get("schedules", [])
-            vt, vs = has_valid(trig), has_valid(sch)
-            if vt and vs:
-                node_colors.append("darkgreen")
-            elif vt:
-                node_colors.append("red")
-            elif vs:
-                node_colors.append("orange")
-            else:
-                node_colors.append("goldenrod")
-        else:
-            node_colors.append("deepskyblue")
+    with open(conf_file_path, "w", encoding="utf-8") as f:
+        f.writelines(updated_lines)
 
-    # Description placeholder
-    description_strs = ["" for _ in nodes_order]
+def find_conf_files_path(my_filepath, excel_output="output.xlsx", restore_placeholder=False, excel_input="metrics_data.xlsx"):
+    """
+    Iterates through all .conf files under the given filepath.
+    For each file, it updates the tps value based on the dtab-url found in each test scenario block.
+    """
+    # Create an output workbook (if needed for further processing)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["API Name", "File Name", "Dtab-URL", "Method", "Data URL", "Default TPS", "Prod TPS", "Prod Weight", "Delta TPS", "Delta Weight"])
 
-    # Use full opacity for visible nodes and texts initially.
-    node_alpha = [1] * len(nodes_order)
-    text_alpha = [1] * len(nodes_order)
+    # Load the TPS mapping from the metrics excel file
+    tps_mapping = load_tps_mapping(excel_input)
 
-    # Precompute ancestors/descendants for highlighting
-    node_indices = {node: i for i, node in enumerate(nodes_order)}
-    related_list = []
-    for n in nodes_order:
-        rel = set(nx.ancestors(G, n)) | set(nx.descendants(G, n)) | {n}
-        rel_idx = [node_indices[r] for r in rel if r in node_indices]
-        related_list.append(rel_idx)
+    p = Path(my_filepath)
+    for conf_file in p.rglob("*.conf"):
+        restore_values_with_actual_tps(conf_file, tps_mapping)
 
-    node_source = ColumnDataSource(data=dict(
-        x=x_coords,
-        y=y_coords,
-        yaml_file=yaml_files,
-        triggers=triggers_strs,
-        schedules=schedules_strs,
-        description=description_strs,
-        color=node_colors,
-        node_alpha=node_alpha,
-        text_alpha=text_alpha,
-        related=related_list
-    ))
-
-    # Edges
-    edge_x0, edge_y0, edge_x1, edge_y1 = [], [], [], []
-    control_x, control_y = [], []
-    edge_start_idx, edge_end_idx, edge_alpha_vals = [], [], []
-    for start, end in G.edges():
-        if start in pos and end in pos and start in node_indices and end in node_indices:
-            x0, y0 = pos[start]
-            x1, y1 = pos[end]
-            cx = (x0 + x1) / 2
-            cy = (y0 + y1) / 2 + 50
-            edge_x0.append(x0)
-            edge_y0.append(y0)
-            edge_x1.append(x1)
-            edge_y1.append(y1)
-            control_x.append(cx)
-            control_y.append(cy)
-            edge_start_idx.append(node_indices[start])
-            edge_end_idx.append(node_indices[end])
-            edge_alpha_vals.append(0.6)
-
-    edge_source = ColumnDataSource(data=dict(
-        x0=edge_x0,
-        y0=edge_y0,
-        x1=edge_x1,
-        y1=edge_y1,
-        cx=control_x,
-        cy=control_y,
-        start_index=edge_start_idx,
-        end_index=edge_end_idx,
-        alpha=edge_alpha_vals
-    ))
-
-    # Create figure
-    p = figure(
-        title="Azure YAML Pipeline Dependencies (Interactive)",
-        width=3000,
-        height=3000,
-        tools="pan,wheel_zoom,box_select,lasso_select,reset,save",
-        active_scroll="wheel_zoom"
-    )
-
-    p.x_range.start = 0
-    p.x_range.end   = max(x_coords) + 200
-    p.y_range.start = min(y_coords) + 10
-    p.y_range.end   = max(y_coords) + 30
-
-    # Edges as a quadratic
-    p.quadratic(
-        x0="x0", y0="y0", x1="x1", y1="y1",
-        cx="cx", cy="cy",
-        source=edge_source,
-        line_width=1,
-        line_color="#888",
-        line_alpha="alpha"
-    )
-
-    # Nodes (set nonselection properties so that non-relevant nodes vanish)
-    r_nodes = p.circle(
-        "x", "y",
-        source=node_source,
-        size=15,
-        fill_color="color",
-        fill_alpha="node_alpha",
-        line_color="black",
-        line_alpha="node_alpha",
-        selection_fill_alpha=1,
-        selection_line_alpha=1,
-        nonselection_fill_alpha=0.1,
-        nonselection_line_alpha=0
-    )
-
-    # Tap tool
-    tap_tool = TapTool(renderers=[r_nodes])
-    p.add_tools(tap_tool)
-
-    # Selection callback (set non-selected nodes/edges alpha to 0 for full invisibility)
-    multi_select_callback = CustomJS(args=dict(node_source=node_source, edge_source=edge_source), code="""
-        const selected = node_source.selected.indices;
-        const n_nodes = node_source.data.x.length;
-        const n_edges = edge_source.data.x0.length;
-
-        let union = new Set();
-        for (let j = 0; j < selected.length; j++){
-            let sel = selected[j];
-            let rel = node_source.data.related[sel];
-            for (let k = 0; k < rel.length; k++){
-                union.add(rel[k]);
-            }
-        }
-
-        // Initialize with 0 (fully transparent)
-        let new_node_alpha = new Array(n_nodes).fill(0);
-        let new_text_alpha = new Array(n_nodes).fill(0);
-        let new_edge_alpha = new Array(n_edges).fill(0);
-
-        if (selected.length === 0){
-            new_node_alpha.fill(1);
-            new_text_alpha.fill(1);
-            new_edge_alpha.fill(0.6);
-        } else {
-            for (let i = 0; i < n_nodes; i++){
-                if (union.has(i)){
-                    new_node_alpha[i] = 1;
-                    new_text_alpha[i] = 1;
-                }
-            }
-            for (let i = 0; i < n_edges; i++){
-                let st = edge_source.data.start_index[i];
-                let en = edge_source.data.end_index[i];
-                if (union.has(st) && union.has(en)){
-                    new_edge_alpha[i] = 0.8;
-                }
-            }
-        }
-
-        node_source.data.node_alpha = new_node_alpha;
-        node_source.data.text_alpha = new_text_alpha;
-        edge_source.data.alpha = new_edge_alpha;
-
-        node_source.change.emit();
-        edge_source.change.emit();
-    """)
-    node_source.selected.js_on_change("indices", multi_select_callback)
-
-    # Labels
-    labels = LabelSet(
-        x="x",
-        y="y",
-        text="yaml_file",
-        x_offset=-15,
-        y_offset=0,
-        source=node_source,
-        text_color="color",
-        text_align="right",
-        text_alpha="text_alpha"
-    )
-    p.add_layout(labels)
-
-    # Hover tool (slightly bigger font, forced wider box)
-    hover_tool = HoverTool(
-        renderers=[r_nodes],
-        tooltips="""
-<div style="white-space: pre-wrap; font-size:16px; width:400px;">
-  <b>File:</b> @yaml_file<br>
-  <b>Triggers:</b> @triggers<br>
-  <b>Schedules:</b> @schedules<br>
-  <b>Description:</b> @description
-</div>
-"""
-    )
-    p.add_tools(hover_tool)
-
-    # ---- Modified part for adjustable label and text input appearance ----
-
-    # Create a Div for the label with bigger, bold text.
-    div_label = Div(text="<b style='font-size:20px;'>Filter pipelines (partial match):</b>", width=400)
-    # Create a TextInput with a larger width.
-    text_input = TextInput(placeholder="Type a pipeline name", width=400)
-    # Wrap the label and text input in a column to add extra padding.
-    controls = column(div_label, text_input, width=420)
-
-    
-    # -------------------------------------------------------------------------
-
-    # Text input filtering callback remains unchanged.
-    filter_callback = CustomJS(args=dict(node_source=node_source, edge_source=edge_source, text_input=text_input), code="""
-        var val = text_input.value.trim().toLowerCase();
-        var n_nodes = node_source.data.x.length;
-        var n_edges = edge_source.data.x0.length;
-
-        var matched = [];
-        for (var i = 0; i < n_nodes; i++){
-            var name = node_source.data.yaml_file[i].toLowerCase();
-            if (name.indexOf(val) !== -1){
-                matched.push(i);
-            }
-        }
-
-        let union = new Set();
-        for (let m of matched){
-            let rel = node_source.data.related[m];
-            for (let r of rel){
-                union.add(r);
-            }
-        }
-
-        // Initialize with 0 (fully transparent)
-        let new_node_alpha = new Array(n_nodes).fill(0);
-        let new_text_alpha = new Array(n_nodes).fill(0);
-        let new_edge_alpha = new Array(n_edges).fill(0);
-
-        if (val === ""){
-            new_node_alpha.fill(1);
-            new_text_alpha.fill(1);
-            new_edge_alpha.fill(0.6);
-        } else {
-            for (let i = 0; i < n_nodes; i++){
-                if (union.has(i)){
-                    new_node_alpha[i] = 1;
-                    new_text_alpha[i] = 1;
-                }
-            }
-            for (let i = 0; i < n_edges; i++){
-                let st = edge_source.data.start_index[i];
-                let en = edge_source.data.end_index[i];
-                if (union.has(st) && union.has(en)){
-                    new_edge_alpha[i] = 0.8;
-                }
-            }
-        }
-
-        node_source.data.node_alpha = new_node_alpha;
-        node_source.data.text_alpha = new_text_alpha;
-        edge_source.data.alpha = new_edge_alpha;
-
-        node_source.change.emit();
-        edge_source.change.emit();
-    """)
-    text_input.js_on_change("value", filter_callback)
-
-    # Create offscreen glyphs for legend to show correct colors (bigger size)
-    r_green  = p.circle(x=[999999], y=[999999], color="darkgreen",    size=15)
-    r_red    = p.circle(x=[999999], y=[999999], color="red",          size=15)
-    r_orange = p.circle(x=[999999], y=[999999], color="orange",       size=15)
-    r_yellow = p.circle(x=[999999], y=[999999], color="goldenrod",    size=15)
-    r_blue   = p.circle(x=[999999], y=[999999], color="deepskyblue",  size=15)
-
-    # Legend
-    legend = Legend(items=[
-        LegendItem(label="Green: Triggered and Scheduled", renderers=[r_green]),
-        LegendItem(label="Red: Triggered",              renderers=[r_red]),
-        LegendItem(label="Orange: Scheduled",           renderers=[r_orange]),
-        LegendItem(label="Yellow: Not triggered nor scheduled", renderers=[r_yellow]),
-        LegendItem(label="Blue: Used by other pipelines", renderers=[r_blue]),
-    ], location="top_left")
-
-    # Make legend text and glyphs bigger
-    legend.label_text_font_size = "12pt"
-    legend.glyph_width = 20
-    legend.glyph_height = 20
-
-    p.add_layout(legend)
-
-    # Use the controls column (with added padding) above the plot.
-    layout = column(controls, p)
-    output_file(output_html)
-    show(layout)
+if __name__ == "__main__":
+    directory_path = Path(Path(__file__).parent, "..", "api-gatling-tests-java/src/main/resources/api/")
+    find_conf_files_path(directory_path, excel_output="scenario_tps_config.xlsx", restore_placeholder=True)
