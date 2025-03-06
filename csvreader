@@ -2,15 +2,36 @@ import re
 from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
+import re
+
 def path_template_to_regex(template: str):
     """
-    Converts an Excel pathTemplate (with {variable}) into a regex pattern.
-    E.g., '/v5/party/{uuid}/group' -> '^/v5/party/[^/]+/group$'
-    This will match conf file URLs like '/v5/party/:myid:/group' or '/v5/party/abc/group'.
+    Converts an Excel pathTemplate (with {variable}) into a regex pattern
+    that correctly matches dtab-url in the conf file with :variable: format.
+
+    - Excel: '/v2/agreements/execution-mandates/{id}'
+    - Conf: '/v2/agreements/execution-mandates/:someid:'
+
+    Must NOT match:
+    - '/v2/agreements/execution-mandates/somevalue' (missing colons)
+    - '/v2/agreements/execution-mandates/{url}' (literal brackets)
+
+    Converts:
+    - '{variable}' -> ':[^/:]+:' (must be wrapped in colons)
+
+    Ensures:
+    - '/v2/agreements/execution-mandates/:somevalue:' ✅ Matches
+    - '/v2/agreements/execution-mandates/somevalue' ❌ No match
+    - '/v2/agreements/execution-mandates/{url}' ❌ No match
     """
-    regex_pattern = re.sub(r"\{[^}]+\}", r"[^/]+", template)
+    # Convert `{variable}` to `:[^/:]+:` ensuring it allows only `:something:` format
+    regex_pattern = re.sub(r"\{[^}]+\}", r":([^/:]+):", template)
+
+    # Ensure the regex matches the full path
     regex_pattern = "^" + regex_pattern + "$"
+
     return re.compile(regex_pattern)
+
 
 def load_tps_mapping(excel_input):
     """
