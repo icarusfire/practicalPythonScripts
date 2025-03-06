@@ -2,38 +2,24 @@ import re
 from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
-fields_to_be_replaced_with_placeholder = ["tps"]
-
 def path_template_to_regex(template: str):
     """
     Converts an Excel pathTemplate (with {variable}) into a regex pattern.
-    
-    Example:
-      Input:  "/v5/party/{uuid}/group"
-      Output: regex pattern "^/v5/party/[^/]+/group$"
-    
-    Note: This regex will match any URL with the same static parts and any single segment
-    in place of the variable—so it will match conf file URLs like "/v5/party/:myid:/group" 
-    or "/v5/party/abc/group".
+    E.g., '/v5/party/{uuid}/group' -> '^/v5/party/[^/]+/group$'
+    This will match conf file URLs like '/v5/party/:myid:/group' or '/v5/party/abc/group'.
     """
-    # Replace {variable} with a regex pattern that matches any sequence of characters except '/'
     regex_pattern = re.sub(r"\{[^}]+\}", r"[^/]+", template)
     regex_pattern = "^" + regex_pattern + "$"
     return re.compile(regex_pattern)
 
 def load_tps_mapping(excel_input):
     """
-    Loads a mapping from the metrics_data.xlsx file.
-    Uses the 'pathTemplate' column as key and '%40 added' as the TPS value.
-    
-    Returns:
-      A list of tuples: (compiled_regex, tps_value)
+    Reads 'pathTemplate' and '%40 added' from the Excel file, building
+    a list of (compiled_regex, tps_value) for matching in conf files.
     """
-    mapping = []
     workbook = load_workbook(excel_input)
     sheet = workbook.active
 
-    # Read header row to dynamically find column indices.
     header = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
     try:
         path_template_index = header.index("pathTemplate")
@@ -41,85 +27,115 @@ def load_tps_mapping(excel_input):
     except ValueError as e:
         raise ValueError("Required column not found in Excel file: " + str(e))
 
+    mapping = []
     for row in sheet.iter_rows(min_row=2, values_only=True):
         path_template = row[path_template_index]
         tps_value = row[tps_value_index]
         if path_template is not None:
             pattern = path_template_to_regex(str(path_template).strip())
-            mapping.append((pattern, str(tps_value).strip() if tps_value is not None else ""))
+            mapping.append((pattern, str(tps_value).strip() if tps_value else ""))
     return mapping
 
 def get_tps_for_url(dtab_url, tps_mapping):
     """
-    Iterates through the mapping and returns the TPS value for the first matching regex.
-    
-    The regex patterns (derived from Excel pathTemplates) are designed to match URLs
-    regardless of how the variable segment appears (e.g. ':myid:' in the conf file).
+    Returns the first matching TPS value for the given dtab_url
+    by checking each (regex, tps_value) pair in tps_mapping.
     """
-    for pattern, tps_value in tps_mapping:
-        if pattern.match(dtab_url):
+    for regex_pattern, tps_value in tps_mapping:
+        if regex_pattern.match(dtab_url):
             return tps_value
     return None
 
+def update_scenario_block(lines, tps_mapping):
+    """
+    Given the lines of a single scenario block (from the opening '{' to the closing '}'):
+      1. Find the dtab-url (if any).
+      2. If found, look up the TPS in tps_mapping.
+      3. Replace all tps lines in that block with the new TPS.
+
+    Returns the modified lines for this block.
+    """
+    dtab_url_line_pattern = re.compile(r'^\s*dtab-url\s*=\s*(.+?)\s*$')
+    tps_line_pattern       = re.compile(r'^(\s*)tps\s*=\s*(\d+)\s*$')
+
+    # First pass: find dtab-url
+    dtab_url = None
+    for line in lines:
+        match = dtab_url_line_pattern.match(line)
+        if match:
+            dtab_url = match.group(1).strip()
+            break
+
+    # Second pass: if we found a matching dtab-url, update all tps lines
+    if dtab_url:
+        new_tps = get_tps_for_url(dtab_url, tps_mapping)
+        if new_tps is not None:
+            updated_block = []
+            for line in lines:
+                tps_match = tps_line_pattern.match(line)
+                if tps_match:
+                    indent = tps_match.group(1)
+                    line = f"{indent}tps={new_tps}\n"
+                updated_block.append(line)
+            return updated_block
+
+    # If no dtab-url or no TPS found, return lines unchanged
+    return lines
+
 def restore_values_with_actual_tps(conf_file_path, tps_mapping):
     """
-    Updates the TPS values in a conf file by matching the dtab-url in each block.
-    
-    The conf file is expected to have lines such as:
-      dtab-url = /v5/party/:myid:/group
-      tps = 23
-      
-    The function uses the captured dtab-url to look up the correct TPS value
-    using regex matching (which tolerates differences in the variable placeholder).
-    
-    It supports multiple blocks with the same dtab-url.
+    Reads a .conf file, processes it block by block.
+    A block is defined as a line ending with '{' up to the matching '}'.
+    For each block, we gather lines, then update tps if there's a matching dtab-url.
     """
-    updated_lines = []
-    current_dtab_url = None
+    scenario_start_pattern = re.compile(r'^\s*[A-Za-z0-9_\-]+\s*\{$')
+    scenario_end_pattern   = re.compile(r'^\s*}\s*$')
 
-    # Pattern to detect a dtab-url line (e.g., "dtab-url = /v5/party/:myid:/group")
-    dtab_url_line_pattern = re.compile(r'^\s*dtab-url\s*=\s*(.+?)\s*$')
-    # Pattern to detect a tps line (e.g., "tps = 23")
-    tps_line_pattern = re.compile(r'^(\s*)tps\s*=\s*(\d+)\s*$')
-    # Pattern to detect the closing brace, indicating end of a block.
-    closing_brace_pattern = re.compile(r'^(\s*)}\s*$')
+    updated_file_lines = []
+    block_lines = []
+    in_block = False
 
     with open(conf_file_path, "r", encoding="utf-8") as f:
         for line in f:
-            # Capture the dtab-url for the current block.
-            dtab_match = dtab_url_line_pattern.match(line)
-            if dtab_match:
-                current_dtab_url = dtab_match.group(1).strip()
+            if not in_block:
+                # If we see something like "some_scenario {", this starts a block
+                if scenario_start_pattern.match(line):
+                    in_block = True
+                    block_lines = [line]
+                else:
+                    # Not in a block yet, just copy the line as is
+                    updated_file_lines.append(line)
+            else:
+                # We are inside a block
+                block_lines.append(line)
+                # Check if this line closes the block
+                if scenario_end_pattern.match(line):
+                    # Process the entire block
+                    updated_block = update_scenario_block(block_lines, tps_mapping)
+                    updated_file_lines.extend(updated_block)
+                    block_lines = []
+                    in_block = False
 
-            # If we encounter a TPS line within a block that has a dtab-url,
-            # try to fetch the corresponding TPS value from the mapping.
-            tps_match = tps_line_pattern.match(line)
-            if tps_match and current_dtab_url:
-                indent = tps_match.group(1)
-                real_tps = get_tps_for_url(current_dtab_url, tps_mapping)
-                if real_tps is not None:
-                    line = f"{indent}tps={real_tps}\n"
+    # If the file doesn't end cleanly (unlikely, but just in case),
+    # we append whatever remains in block_lines
+    if block_lines:
+        updated_file_lines.extend(block_lines)
 
-            # Reset the current dtab-url when the block ends.
-            if closing_brace_pattern.match(line):
-                current_dtab_url = None
-
-            updated_lines.append(line)
-
+    # Write the final updated content back to the file
     with open(conf_file_path, "w", encoding="utf-8") as f:
-        f.writelines(updated_lines)
+        f.writelines(updated_file_lines)
 
 def find_conf_files_path(my_filepath, excel_output="output.xlsx", restore_placeholder=False, excel_input="metrics_data.xlsx"):
     """
     Iterates through all .conf files under the given filepath.
-    For each file, it updates the TPS value based on the dtab-url found in each test scenario block.
+    For each file, updates the TPS value by matching the block's dtab-url
+    against the pathTemplate-based regex from the Excel file.
     """
-    # Create an output workbook (if further processing/output is needed).
+    # Optional: create a workbook for output if you need it
     workbook = Workbook()
     sheet = workbook.active
     sheet.append(["API Name", "File Name", "dtab-url", "Method", "Data URL", "Default TPS", "Prod TPS", "Prod Weight", "Delta TPS", "Delta Weight"])
 
-    # Load the TPS mapping from the metrics excel file.
     tps_mapping = load_tps_mapping(excel_input)
 
     p = Path(my_filepath)
