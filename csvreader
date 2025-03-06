@@ -74,4 +74,58 @@ def restore_values_with_actual_tps(conf_file_path, tps_mapping):
     
     It supports multiple blocks with the same dtab-url.
     """
-    updated_lines = 
+    updated_lines = []
+    current_dtab_url = None
+
+    # Pattern to detect a dtab-url line (e.g., "dtab-url = /v5/party/:myid:/group")
+    dtab_url_line_pattern = re.compile(r'^\s*dtab-url\s*=\s*(.+?)\s*$')
+    # Pattern to detect a tps line (e.g., "tps = 23")
+    tps_line_pattern = re.compile(r'^(\s*)tps\s*=\s*(\d+)\s*$')
+    # Pattern to detect the closing brace, indicating end of a block.
+    closing_brace_pattern = re.compile(r'^(\s*)}\s*$')
+
+    with open(conf_file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            # Capture the dtab-url for the current block.
+            dtab_match = dtab_url_line_pattern.match(line)
+            if dtab_match:
+                current_dtab_url = dtab_match.group(1).strip()
+
+            # If we encounter a TPS line within a block that has a dtab-url,
+            # try to fetch the corresponding TPS value from the mapping.
+            tps_match = tps_line_pattern.match(line)
+            if tps_match and current_dtab_url:
+                indent = tps_match.group(1)
+                real_tps = get_tps_for_url(current_dtab_url, tps_mapping)
+                if real_tps is not None:
+                    line = f"{indent}tps={real_tps}\n"
+
+            # Reset the current dtab-url when the block ends.
+            if closing_brace_pattern.match(line):
+                current_dtab_url = None
+
+            updated_lines.append(line)
+
+    with open(conf_file_path, "w", encoding="utf-8") as f:
+        f.writelines(updated_lines)
+
+def find_conf_files_path(my_filepath, excel_output="output.xlsx", restore_placeholder=False, excel_input="metrics_data.xlsx"):
+    """
+    Iterates through all .conf files under the given filepath.
+    For each file, it updates the TPS value based on the dtab-url found in each test scenario block.
+    """
+    # Create an output workbook (if further processing/output is needed).
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["API Name", "File Name", "dtab-url", "Method", "Data URL", "Default TPS", "Prod TPS", "Prod Weight", "Delta TPS", "Delta Weight"])
+
+    # Load the TPS mapping from the metrics excel file.
+    tps_mapping = load_tps_mapping(excel_input)
+
+    p = Path(my_filepath)
+    for conf_file in p.rglob("*.conf"):
+        restore_values_with_actual_tps(conf_file, tps_mapping)
+
+if __name__ == "__main__":
+    directory_path = Path(Path(__file__).parent, "..", "api-gatling-tests-java/src/main/resources/api/partyandagreementsearch")
+    find_conf_files_path(directory_path, excel_output="scenario_tps_config.xlsx", restore_placeholder=True)
