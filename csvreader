@@ -96,7 +96,7 @@ def update_scenario_block(lines, tps_mapping):
                 tps_match = tps_line_pattern.match(line)
                 if tps_match:
                     indent = tps_match.group(1)
-                    line = f"{indent}tps={new_tps}\n"
+                    line = f"{indent}tps = {new_tps}\n"
                 updated_block.append(line)
             return updated_block
 
