@@ -14,3 +14,7 @@
             }
         }
     }
+
+Map<String, Object> testMap = (Map<String, Object>) finalMap.get("test");
+Map<String, Map<String, Object>> definitions = (Map<String, Map<String, Object>>) testMap.get("definitions");
+updateTps(definitions);
