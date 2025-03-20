@@ -1,20 +1,90 @@
-    public static void updateTps(Map<String, Map<String, Object>> scenarios) {
-        for (Map.Entry<String, Map<String, Object>> entry : scenarios.entrySet()) {
-            Map<String, Object> scenario = entry.getValue();
 
-            // Check if both "weight" and "tps" keys exist and are numbers.
-            if (scenario.containsKey("weight") && scenario.get("weight") instanceof Number &&
-                scenario.containsKey("tps") && scenario.get("tps") instanceof Number) {
+wb = Workbook()
+sheet = wb.active
+sheet.title = "Max Tps Last 7 days"
+sheet.append(["service", "data center", "method", "pathTemplate", "max tps last 7 days", "rounded tps", "40% added", "rounded sum tps"])
 
-                double weight = ((Number) scenario.get("weight")).doubleValue();
-                int tps = ((Number) scenario.get("tps")).intValue();
-                // Calculate new TPS and round up.
-                int newTps = (int) Math.ceil(tps * weight);
-                scenario.put("tps", newTps);
-            }
-        }
-    }
+columns = {
+    "service": 0,
+    "data_center": 1,
+    "method": 2,
+    "pathTemplate": 3,
+    "tps": 4,
+    "rounded_tps": 5,
+    "forty_percent_added": 6,
+    "rounded_sum_tps": 7
+}
 
-Map<String, Object> testMap = (Map<String, Object>) finalMap.get("test");
-Map<String, Map<String, Object>> definitions = (Map<String, Map<String, Object>>) testMap.get("definitions");
-updateTps(definitions);
+
+# Combine both datacenters into one row per endpoint and add the rounded sum tps column.
+def combine_datacenter_rows(rows):
+    grouped = {}
+    for row in rows:
+        # Group by service, method, and pathTemplate (ignoring data center)
+        key = (row[columns["service"]], row[columns["method"]], row[columns["pathTemplate"]])
+        if key not in grouped:
+            grouped[key] = []
+        grouped[key].append(row)
+    
+    combined_rows = []
+    for key, group in grouped.items():
+        if len(group) == 2:
+            try:
+                tps1 = float(group[0][columns["tps"]])
+            except (ValueError, IndexError):
+                tps1 = 0
+            try:
+                tps2 = float(group[1][columns["tps"]])
+            except (ValueError, IndexError):
+                tps2 = 0
+            # Select the row with the higher tps for main metrics
+            chosen_row = group[0] if tps1 >= tps2 else group[1]
+            rounded_sum = math.ceil(tps1 + tps2)
+        else:
+            chosen_row = group[0]
+            try:
+                rounded_sum = math.ceil(float(chosen_row[columns["tps"]]))
+            except (ValueError, IndexError):
+                rounded_sum = 0
+        
+        combined_rows.append(chosen_row + [rounded_sum])
+    
+    return combined_rows
+
+rows_data = []
+
+for service_name, url in full_urls.items():
+    try:
+        print(f"Fetching data from {service_name} ({url})...")
+        response = requests.get(url, headers=headers, cookies=cookies)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'data' in data and 'result' in data['data']:
+                for item in data['data']['result']:
+                    metric = item.get("metric", {})
+                    service = service_name
+                    data_center = metric.get("dc", "")
+                    method = metric.get("method", "")
+                    path_template = metric.get("pathTemplate", "")
+
+                    tps = item.get("value", [])[1] if len(item.get("value", [])) > 1 else ""
+                    forty_percent_added = calculate_40_percent(tps) if tps else ""
+                    rounded_tps = calculate_rounded_tps(tps) if tps else ""
+
+                    rows_data.append([service, data_center, method, path_template, tps, rounded_tps, forty_percent_added])
+
+        else:
+            print(f"Failed to fetch data from {service_name}. Status: {response.status_code}")
+
+    except Exception as e:
+        print(f"Error {service_name}: {e}")
+
+# Use the new function to combine rows and include the sum of both TPS values.
+combined_rows_data = combine_datacenter_rows(rows_data)
+
+for row in combined_rows_data:
+    sheet.append(row)
+
+wb.save(excel_file)
+print(f"Ready {excel_file}")
