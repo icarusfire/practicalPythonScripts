@@ -1,54 +1,33 @@
-
-wb = Workbook()
-sheet = wb.active
-sheet.title = "Max Tps Last 7 days"
-sheet.append(["service", "data center", "method", "pathTemplate", "max tps last 7 days", "rounded tps", "40% added", "rounded sum tps"])
-
-columns = {
-    "service": 0,
-    "data_center": 1,
-    "method": 2,
-    "pathTemplate": 3,
-    "tps": 4,
-    "rounded_tps": 5,
-    "forty_percent_added": 6,
-    "rounded_sum_tps": 7
-}
-
-
-# Combine both datacenters into one row per endpoint and add the rounded sum tps column.
-def combine_datacenter_rows(rows):
+# New function: group rows by endpoint (ignoring data center) and add a new column with the sum of TPS values.
+def combine_rows_by_endpoint(rows):
     grouped = {}
     for row in rows:
-        # Group by service, method, and pathTemplate (ignoring data center)
+        # Group key: (service, method, pathTemplate)
         key = (row[columns["service"]], row[columns["method"]], row[columns["pathTemplate"]])
+        try:
+            tps_val = float(row[columns["tps"]]) if row[columns["tps"]] else 0
+        except Exception:
+            tps_val = 0
         if key not in grouped:
-            grouped[key] = []
-        grouped[key].append(row)
-    
-    combined_rows = []
-    for key, group in grouped.items():
-        if len(group) == 2:
-            try:
-                tps1 = float(group[0][columns["tps"]])
-            except (ValueError, IndexError):
-                tps1 = 0
-            try:
-                tps2 = float(group[1][columns["tps"]])
-            except (ValueError, IndexError):
-                tps2 = 0
-            # Select the row with the higher tps for main metrics
-            chosen_row = group[0] if tps1 >= tps2 else group[1]
-            rounded_sum = math.ceil(tps1 + tps2)
+            # Save both the row and the initial TPS sum
+            grouped[key] = {"row": row, "sum": tps_val}
         else:
-            chosen_row = group[0]
+            # Update the sum
+            grouped[key]["sum"] += tps_val
+            # Also, if this row has a higher TPS than the one stored, update the stored row
             try:
-                rounded_sum = math.ceil(float(chosen_row[columns["tps"]]))
-            except (ValueError, IndexError):
-                rounded_sum = 0
-        
-        combined_rows.append(chosen_row + [rounded_sum])
-    
+                current_best = float(grouped[key]["row"][columns["tps"]]) if grouped[key]["row"][columns["tps"]] else 0
+            except Exception:
+                current_best = 0
+            if tps_val > current_best:
+                grouped[key]["row"] = row
+
+    # Build the final list of rows, appending the rounded sum tps (ceiling of the sum)
+    combined_rows = []
+    for entry in grouped.values():
+        chosen_row = entry["row"]
+        rounded_sum_tps = math.ceil(entry["sum"])
+        combined_rows.append(chosen_row + [rounded_sum_tps])
     return combined_rows
 
 rows_data = []
@@ -69,22 +48,13 @@ for service_name, url in full_urls.items():
                     path_template = metric.get("pathTemplate", "")
 
                     tps = item.get("value", [])[1] if len(item.get("value", [])) > 1 else ""
+                    # Compute the additional metrics based on the single TPS value
                     forty_percent_added = calculate_40_percent(tps) if tps else ""
                     rounded_tps = calculate_rounded_tps(tps) if tps else ""
 
                     rows_data.append([service, data_center, method, path_template, tps, rounded_tps, forty_percent_added])
-
         else:
             print(f"Failed to fetch data from {service_name}. Status: {response.status_code}")
 
     except Exception as e:
         print(f"Error {service_name}: {e}")
-
-# Use the new function to combine rows and include the sum of both TPS values.
-combined_rows_data = combine_datacenter_rows(rows_data)
-
-for row in combined_rows_data:
-    sheet.append(row)
-
-wb.save(excel_file)
-print(f"Ready {excel_file}")
