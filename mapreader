@@ -1,31 +1,94 @@
-def find_yaml_refs(item, base_dir):
-    """
-    Recursively walks through item (which can be dict, list, or str).
-    Returns a list of absolute paths to .yml or .yaml files discovered.
-    """
-    refs = []
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, classification_report
 
-    if isinstance(item, dict):
-        # Look at each key/value in the dict
-        for k, v in item.items():
-            # If the key is 'template' or 'extends', and the value ends with .yml/.yaml
-            if k in ['template', 'extends']:
-                # Single string?
-                if isinstance(v, str) and v.lower().endswith(('.yml', '.yaml')):
-                    refs.append(os.path.abspath(os.path.join(base_dir, v)))
-                # Or possibly a list?
-                elif isinstance(v, list):
-                    for entry in v:
-                        if isinstance(entry, str) and entry.lower().endswith(('.yml', '.yaml')):
-                            refs.append(os.path.abspath(os.path.join(base_dir, entry)))
-            # Recurse deeper to catch nested templates
-            refs.extend(find_yaml_refs(v, base_dir))
+# Read data from an Excel file
+df = pd.read_excel('your_file.xlsx')
 
-    elif isinstance(item, list):
-        for element in item:
-            refs.extend(find_yaml_refs(element, base_dir))
+# Separate the 'True' and 'False' samples
+df_true = df[df['Target'] == 1]  # True samples
+df_false = df[df['Target'] == 0]  # False samples
 
-    # If it's a string, do nothing special here unless you want to catch
-    # custom keys, but we've handled that above with dict checks.
+# Sample the latest 256 False values
+df_false_sampled = df_false.tail(256)
 
-    return refs
+# Combine the 256 True values with the 256 False values
+df_balanced = pd.concat([df_true, df_false_sampled])
+
+# Shuffle the data to ensure randomness
+df_balanced = df_balanced.sample(frac=1, random_state=42).reset_index(drop=True)
+
+# Split data into features (X) and target (y)
+X = df_balanced['Text']
+y = df_balanced['Target']
+
+# Convert text to numerical features using TfidfVectorizer (better than CountVectorizer for small data)
+vectorizer = TfidfVectorizer()
+X_tfidf = vectorizer.fit_transform(X)
+
+# Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X_tfidf, y, test_size=0.2, random_state=42)
+
+# Initialize and train the SVM model with class weights to handle imbalance
+model = SVC(class_weight='balanced', kernel='linear')  # Linear kernel is often effective for text data
+model.fit(X_train, y_train)
+
+# Make predictions on the test set
+y_pred = model.predict(X_test)
+
+# Evaluate the model
+print(f'Accuracy: {accuracy_score(y_test, y_pred)}')
+print('Classification Report:')
+print(classification_report(y_test, y_pred))
+
+
+
+/////
+
+
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report
+
+# Read data from an Excel file
+df = pd.read_excel('your_file.xlsx')
+
+# Separate the 'True' and 'False' samples
+df_true = df[df['Target'] == 1]  # True samples
+df_false = df[df['Target'] == 0]  # False samples
+
+# Sample the latest 256 False values
+df_false_sampled = df_false.tail(256)
+
+# Combine the 256 True values with the 256 False values
+df_balanced = pd.concat([df_true, df_false_sampled])
+
+# Shuffle the data to ensure randomness
+df_balanced = df_balanced.sample(frac=1, random_state=42).reset_index(drop=True)
+
+# Split data into features (X) and target (y)
+X = df_balanced['Text']
+y = df_balanced['Target']
+
+# Convert text to numerical features using TfidfVectorizer
+vectorizer = TfidfVectorizer()
+X_tfidf = vectorizer.fit_transform(X)
+
+# Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X_tfidf, y, test_size=0.2, random_state=42)
+
+# Initialize and train the Logistic Regression model with regularization (L2)
+model = LogisticRegression(class_weight='balanced', solver='liblinear')
+model.fit(X_train, y_train)
+
+# Make predictions on the test set
+y_pred = model.predict(X_test)
+
+# Evaluate the model
+print(f'Accuracy: {accuracy_score(y_test, y_pred)}')
+print('Classification Report:')
+print(classification_report(y_test, y_pred))
