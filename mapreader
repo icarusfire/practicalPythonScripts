@@ -1,94 +1,39 @@
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split
-from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score, classification_report
-
-# Read data from an Excel file
-df = pd.read_excel('your_file.xlsx')
-
-# Separate the 'True' and 'False' samples
-df_true = df[df['Target'] == 1]  # True samples
-df_false = df[df['Target'] == 0]  # False samples
-
-# Sample the latest 256 False values
-df_false_sampled = df_false.tail(256)
-
-# Combine the 256 True values with the 256 False values
-df_balanced = pd.concat([df_true, df_false_sampled])
-
-# Shuffle the data to ensure randomness
-df_balanced = df_balanced.sample(frac=1, random_state=42).reset_index(drop=True)
-
-# Split data into features (X) and target (y)
-X = df_balanced['Text']
-y = df_balanced['Target']
-
-# Convert text to numerical features using TfidfVectorizer (better than CountVectorizer for small data)
-vectorizer = TfidfVectorizer()
-X_tfidf = vectorizer.fit_transform(X)
-
-# Split data into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X_tfidf, y, test_size=0.2, random_state=42)
-
-# Initialize and train the SVM model with class weights to handle imbalance
-model = SVC(class_weight='balanced', kernel='linear')  # Linear kernel is often effective for text data
-model.fit(X_train, y_train)
-
-# Make predictions on the test set
-y_pred = model.predict(X_test)
-
-# Evaluate the model
-print(f'Accuracy: {accuracy_score(y_test, y_pred)}')
-print('Classification Report:')
-print(classification_report(y_test, y_pred))
-
-
-
-/////
-
-
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import precision_recall_fscore_support, accuracy_score
+import pandas as pd
+import numpy as np
 
-# Read data from an Excel file
-df = pd.read_excel('your_file.xlsx')
+# Stratified K-Fold setup
+skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
 
-# Separate the 'True' and 'False' samples
-df_true = df[df['Target'] == 1]  # True samples
-df_false = df[df['Target'] == 0]  # False samples
+accuracies = []
+precisions = []
+recalls = []
 
-# Sample the latest 256 False values
-df_false_sampled = df_false.tail(256)
+for train_idx, test_idx in skf.split(X_tfidf, y):
+    X_train, X_test = X_tfidf[train_idx], X_tfidf[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
-# Combine the 256 True values with the 256 False values
-df_balanced = pd.concat([df_true, df_false_sampled])
+    model = LogisticRegression(class_weight='balanced', solver='liblinear')
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
 
-# Shuffle the data to ensure randomness
-df_balanced = df_balanced.sample(frac=1, random_state=42).reset_index(drop=True)
+    acc = accuracy_score(y_test, y_pred)
+    prec, rec, _, _ = precision_recall_fscore_support(y_test, y_pred, average=None, labels=[0, 1])
 
-# Split data into features (X) and target (y)
-X = df_balanced['Text']
-y = df_balanced['Target']
+    accuracies.append(acc)
+    precisions.append(prec)
+    recalls.append(rec)
 
-# Convert text to numerical features using TfidfVectorizer
-vectorizer = TfidfVectorizer()
-X_tfidf = vectorizer.fit_transform(X)
+# Average results
+summary = pd.DataFrame({
+    'Accuracy': accuracies,
+    'Precision_0': [p[0] for p in precisions],
+    'Recall_0': [r[0] for r in recalls],
+    'Precision_1': [p[1] for p in precisions],
+    'Recall_1': [r[1] for r in recalls],
+})
 
-# Split data into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X_tfidf, y, test_size=0.2, random_state=42)
-
-# Initialize and train the Logistic Regression model with regularization (L2)
-model = LogisticRegression(class_weight='balanced', solver='liblinear')
-model.fit(X_train, y_train)
-
-# Make predictions on the test set
-y_pred = model.predict(X_test)
-
-# Evaluate the model
-print(f'Accuracy: {accuracy_score(y_test, y_pred)}')
-print('Classification Report:')
-print(classification_report(y_test, y_pred))
+print("=== Average over 10 folds ===")
+print(summary.mean().round(3))
